@@ -37,9 +37,10 @@ jobbermessage_joboffer_schema = {
   "title": "job offer jobber message",
   "type": "object",
   "properties": {
-    "job_id": {
+    "offer_id": {
       "type": "string",
-      "description": "The id of the sender. The id persists between thing reboots and joining of broker"
+      "description": "The offer identifier. Not the same as the job. The offer is for recruiting workers, who are then"
+                     "directed to the right topic for the job"
     },
     "message": {
       "type": "string",
@@ -52,10 +53,17 @@ jobbermessage_joboffer_schema = {
   }
 }
 
+jobber_topic_offers_path = "mqtt_jobber/offers/{offer_number}"
+jobber_topic_workers_path = "mqtt_jobber/job/{job_number}/workers"
+jobber_thing_client_message = "mqtt_jobber/thing/{thing_id}/{client_id}/incoming"
+
 
 class JobberDispatcher(threading.Thread):
     _mqtt_client = None
     _mqtt_client_my_id = None
+
+    # TODO Array of job dictionaries needs to be replaced by something like a DB for persistence
+    jobs = []
 
     def __init__(self, mqtt_broker_host, mqtt_broker_port=1883, keep_alive=60,
                  client_id=mqtt.base62(uuid.uuid4().int, padding=22)):
@@ -89,8 +97,28 @@ class JobberDispatcher(threading.Thread):
     def stop(self):
         self._mqtt_client.disconnect()
 
-    def dispatch_job_offer(self):
-        self._mqtt_client.publish("mqtt_jobber/dispatch", "Bleep!")
+    def dispatch_job_offer(self, job):
+
+        # Create / subscribe to topic for workers to offer services for new job
+        # QUESTION is it better to subscribe to a wildcard topic
+        self._mqtt_client.subscribe(jobber_topic_offers_path.format(job["offer_id"]))
+
+        self._mqtt_client.publish("mqtt_jobber/dispatch", job)
+
+    def new_job(self, description="", max_workers=-1, min_workers=-1, pattern=None):
+        # TODO Job needs to be persisted to some kind of DB
+        # TODO Look at SymPy for implementing worker criteria as modal logic expression
+        #  https://docs.sympy.org/latest/index.html
+        job = {
+            "description": description,
+            "offer_id": "o"+mqtt.base62(uuid.uuid4().int, padding=22),
+            "job_id": "j"+mqtt.base62(uuid.uuid4().int, padding=22),
+            "max_workers": max_workers,
+            "min_workers": min_workers,
+            "worker_criteria": None,
+            "pattern": pattern,
+        }
+        return job
 
 
 class JobberWorker(threading.Thread):
@@ -98,8 +126,11 @@ class JobberWorker(threading.Thread):
     _mqtt_client = None
     _mqtt_client_my_id = None
 
-    def __init__(self, mqtt_broker_host, mqtt_broker_port=1883, keep_alive=60,
-                 client_id=mqtt.base62(uuid.uuid4().int, padding=22)):
+    thing_id = None
+
+    def __init__(self, thing_id,
+                 mqtt_broker_host, mqtt_broker_port=1883, keep_alive=60,
+                 client_id=None, padding=22):
         threading.Thread.__init__(self)
         # Create the client to the MQTT broker for the worker
 
@@ -107,6 +138,8 @@ class JobberWorker(threading.Thread):
         # initialization of Client object and the class generates it's own id. So just set it to some value using
         # the same method the Client object implementation does. That way I know what the ID is. The ID is used later
         # for dispatching jobs on a per-client topic
+        if client_id is None:
+            client_id = "{}-{}".format(thing_id, mqtt.base62(uuid.uuid4().int))
         self._mqtt_client_my_id = client_id
 
         self._mqtt_client = mqtt.Client(client_id=self._mqtt_client_my_id)
@@ -125,6 +158,10 @@ class JobberWorker(threading.Thread):
         # QUESTION Is there a way to kick others off a topic?
         self._mqtt_client.subscribe("mqtt_jobber/workers/"+self._mqtt_client_my_id)
 
+        # Join the topic for this client
+        self._mqtt_client.subscribe(jobber_thing_client_message.format(thing_id=self.thing_id,
+                                                                       client_id=self._mqtt_client_my_id))
+
     # The callback for when a PUBLISH message is received from the server.
     def on_message(self, client, userdata, msg):
         print(msg.topic + " " + str(msg.payload))
@@ -142,7 +179,7 @@ class JobberWorker(threading.Thread):
 dispatcher = JobberDispatcher("localhost")
 dispatcher.start()
 
-worker = JobberWorker("localhost")
+worker = JobberWorker("thing 1", "localhost")
 worker.start()
 worker.bleep()
 time.sleep(2)
