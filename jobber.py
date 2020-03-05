@@ -7,6 +7,8 @@
 import uuid
 import threading
 import time
+import json
+import logging
 
 import paho.mqtt.client as mqtt
 
@@ -53,7 +55,7 @@ jobbermessage_joboffer_schema = {
   }
 }
 
-jobber_topic_offers_path = "mqtt_jobber/offers/{offer_number}"
+jobber_topic_offers_path = "mqtt_jobber/offers/{offer_id}"
 jobber_topic_workers_path = "mqtt_jobber/job/{job_number}/workers"
 jobber_thing_client_message = "mqtt_jobber/thing/{thing_id}/{client_id}/incoming"
 
@@ -61,13 +63,17 @@ jobber_thing_client_message = "mqtt_jobber/thing/{thing_id}/{client_id}/incoming
 class JobberDispatcher(threading.Thread):
     _mqtt_client = None
     _mqtt_client_my_id = None
+    _logger = None
 
     # TODO Array of job dictionaries needs to be replaced by something like a DB for persistence
     jobs = []
 
     def __init__(self, mqtt_broker_host, mqtt_broker_port=1883, keep_alive=60,
-                 client_id=mqtt.base62(uuid.uuid4().int, padding=22)):
+                 client_id=mqtt.base62(uuid.uuid4().int, padding=22),
+                 logger=logging.getLogger("mqtt_jobber.JobberDispatcher")):
         threading.Thread.__init__(self)
+        self._logger = logger
+
         # AFAIK there isn't a way to get a the client_id from the mqtt Client object if it isn't specified in the
         # initialization of Client object and the class generates it's own id. So just set it to some value using
         # the same method the Client object implementation does. That way I know what the ID is. The ID is used later
@@ -82,14 +88,15 @@ class JobberDispatcher(threading.Thread):
 
     # The callback for when the client receives a CONNACK response from the server.
     def on_connect(self, client, userdata, flags, rc):
-        print("Connected with result code " + str(rc))
+        self._logger.info("Connected with result code " + str(rc))
 
         # Join the jobber dispatcher topic
-        self._mqtt_client.subscribe("mqtt_jobber/dispatch")
+        # QUESTION is there a reason for Dispatcher to get messages on the dispatch topic?
+        #self._mqtt_client.subscribe("mqtt_jobber/dispatch.json")
 
     # The callback for when a PUBLISH message is received from the server.
     def on_message(self, client, userdata, msg):
-        print(msg.topic + " " + str(msg.payload))
+        self._logger.info(msg.topic + " " + str(msg.payload))
 
     def run(self):
         self._mqtt_client.loop_forever()
@@ -101,9 +108,9 @@ class JobberDispatcher(threading.Thread):
 
         # Create / subscribe to topic for workers to offer services for new job
         # QUESTION is it better to subscribe to a wildcard topic
-        self._mqtt_client.subscribe(jobber_topic_offers_path.format(job["offer_id"]))
+        self._mqtt_client.subscribe(jobber_topic_offers_path.format(offer_id=job["offer_id"]))
 
-        self._mqtt_client.publish("mqtt_jobber/dispatch", job)
+        self._mqtt_client.publish("mqtt_jobber/dispatch.json", json.dumps(job))
 
     def new_job(self, description="", max_workers=-1, min_workers=-1, pattern=None):
         # TODO Job needs to be persisted to some kind of DB
@@ -125,13 +132,16 @@ class JobberWorker(threading.Thread):
 
     _mqtt_client = None
     _mqtt_client_my_id = None
+    _logger = None
 
     thing_id = None
 
     def __init__(self, thing_id,
                  mqtt_broker_host, mqtt_broker_port=1883, keep_alive=60,
-                 client_id=None, padding=22):
+                 client_id=None,
+                 logger=logging.getLogger("mqtt_jobber.JobberWorker")):
         threading.Thread.__init__(self)
+
         # Create the client to the MQTT broker for the worker
 
         # AFAIK there isn't a way to get a the client_id from the mqtt Client object if it isn't specified in the
@@ -142,6 +152,10 @@ class JobberWorker(threading.Thread):
             client_id = "{}-{}".format(thing_id, mqtt.base62(uuid.uuid4().int))
         self._mqtt_client_my_id = client_id
 
+        logger = logging.getLogger("mqtt_jobber.JobberWorker."+self._mqtt_client_my_id)
+
+        self._logger = logger
+
         self._mqtt_client = mqtt.Client(client_id=self._mqtt_client_my_id)
         self._mqtt_client.on_connect = self.on_connect
         self._mqtt_client.on_message = self.on_message
@@ -149,10 +163,10 @@ class JobberWorker(threading.Thread):
 
     # The callback for when the client receives a CONNACK response from the server.
     def on_connect(self, client, userdata, flags, rc):
-        print("Connected with result code " + str(rc))
+        self._logger.info("Connected with result code " + str(rc))
 
         # Join the jobber dispatcher topic
-        self._mqtt_client.subscribe("mqtt_jobber/dispatch")
+        self._mqtt_client.subscribe("mqtt_jobber/dispatch.json")
 
         # Join topic for this client
         # QUESTION Is there a way to kick others off a topic?
@@ -164,7 +178,12 @@ class JobberWorker(threading.Thread):
 
     # The callback for when a PUBLISH message is received from the server.
     def on_message(self, client, userdata, msg):
-        print(msg.topic + " " + str(msg.payload))
+        if msg.topic.endswith(".json"):
+            payload = json.loads(msg.payload)
+        else:
+            payload = msg.payload
+
+        self._logger.info(msg.topic + " " + str(payload))
 
     def run(self):
         self._mqtt_client.loop_forever()
@@ -175,13 +194,19 @@ class JobberWorker(threading.Thread):
     def bleep(self):
         self._mqtt_client.publish("mqtt_jobber/dispatch", "Bleep!")
 
+    def worker_threading_excepthook(self, exc_type, exc_value, exc_traceback, thread):
+        self.stop()
 
+
+logging.basicConfig(level=logging.DEBUG)
 dispatcher = JobberDispatcher("localhost")
 dispatcher.start()
 
 worker = JobberWorker("thing 1", "localhost")
 worker.start()
-worker.bleep()
+time.sleep(1)
+#worker.bleep()
+dispatcher.dispatch_job_offer(dispatcher.new_job("news jobs"))
 time.sleep(2)
 
 worker.stop()
