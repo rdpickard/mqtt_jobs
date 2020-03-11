@@ -11,15 +11,18 @@ class JobberDispatcher(JobberMQTTThreadedClient):
     # TODO Array of job dictionaries needs to be replaced by something like a DB for persistence
     jobs = {}
 
+    @mqtt_threaded_client_exception_catcher
     def on_connect(self, client, userdata, flags, rc):
         JobberMQTTThreadedClient.on_connect(self, client, userdata, flags, rc)
 
-        # Join the jobber dispatcher topic
-        # QUESTION is there a reason for Dispatcher to get messages on the dispatch topic?
-        #self._mqtt_client.subscribe("mqtt_jobber/dispatch.json")
-
     # The callback for when a PUBLISH message is received from the server.
+    @mqtt_threaded_client_exception_catcher
     def on_message(self, client, userdata, msg):
+        self._logger.info("\\RCV\\ {client_id}@{topic} [msg id={msg_id}]\"{payload}\"".format(client_id=self._mqtt_client_my_id,
+                                                                                              msg_id=msg.mid,
+                                                                                              topic=msg.topic,
+                                                                                              payload=msg.payload))
+
         if msg.topic.endswith(".json"):
             payload = json.loads(msg.payload)
         else:
@@ -39,21 +42,34 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                 self._logger.error("Could not find job with offer_is {}"+offer)
                 return
 
-            self._logger.info("Worker {} wants to join job {} from offer {}".format(payload["client_id"], job["job_number"], offer))
+            self._logger.info("\\   \\ Worker {} wants to join job {} from offer {}".format(payload["client_id"], job["job_number"], offer))
             # TODO Check to see if there are more workers needed
-            self._mqtt_client.publish("mqtt_jobber/workers/"+payload["client_id"]+"/contracts.json",
+            self.jobber_publish("mqtt_jobber/workers/"+payload["client_id"]+"/contracts.json",
                                       json.dumps({"job_number": job["job_number"]}))
 
-        else:
-            self._logger.info(self._logger.info(self._mqtt_client_my_id+"@"+msg.topic+" unprocessed "+msg)
-)
+        elif re.match("mqtt_jobber/job/j([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
+            # Information from a worker about a job
+            self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] 💖 {worker_id}".format(
+                client_id=self._mqtt_client_my_id,
+                msg_id=msg.mid,
+                topic=msg.topic,
+                worker_id=payload["client_id"]))
 
+            # TODO update the job data
+            # TODO refresh the worker's status in my job record to indicate that it's sent proof of life
+        else:
+            self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] Unprocessed".format(
+                client_id=self._mqtt_client_my_id,
+                msg_id=msg.mid,
+                topic=msg.topic))
+
+    @mqtt_threaded_client_exception_catcher
     def dispatch_job_offer(self, job):
 
         # Create / subscribe to topic for workers to offer services for new job
         # QUESTION is it better to subscribe to a wildcard topic
-        self._mqtt_client.subscribe(jobber_topic_dispatcher_path.format(job_number=job["job_number"]))
-        self._mqtt_client.subscribe(jobber_topic_offers_path.format(offer_id=job["offer_id"]))
+        self.jobber_subscribe(jobber_topic_dispatcher_path.format(job_number=job["job_number"]))
+        self.jobber_subscribe(jobber_topic_offers_path.format(offer_id=job["offer_id"]))
         self.jobs[job['job_number']] = job
 
         job_offer = {
@@ -62,8 +78,9 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             "worker_criteria": job["worker_criteria"]
         }
 
-        self._mqtt_client.publish("mqtt_jobber/dispatch.json", json.dumps(job_offer))
+        self.jobber_publish("mqtt_jobber/dispatch.json", json.dumps(job_offer))
 
+    @mqtt_threaded_client_exception_catcher
     def new_job(self, description="", max_workers=-1, min_workers=-1, pattern=None):
         # TODO Job needs to be persisted to some kind of DB
         # TODO Look at SymPy for implementing worker criteria as modal logic expression

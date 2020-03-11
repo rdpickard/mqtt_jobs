@@ -4,6 +4,8 @@ import time
 import json
 import logging
 import re
+import traceback
+import base64
 
 import paho.mqtt.client as mqtt
 
@@ -75,22 +77,22 @@ jobbermessage_worker_heartbeat_message = {"client_id": None, "sent_timestamp": N
 
 jobber_topic_offers_path = "mqtt_jobber/offers/{offer_id}.json"
 jobber_topic_workers_path = "mqtt_jobber/job/{job_number}/workers"
-jobber_topic_dispatcher_path = "mqtt_jobber/job/{job_number}/dispatcher"
+jobber_topic_dispatcher_path = "mqtt_jobber/job/{job_number}/dispatcher.json"
 jobber_thing_client_message = "mqtt_jobber/thing/{thing_id}/{client_id}/incoming"
 
-mqtt_topics_and_messages = {
-    "job_offers": {
-        "topic_path": "mqtt_jobber/offers/{offer_id}.json",
-        "match_reject": 
 
-    },
-    "workers_topic": {
-
-    },
-    "job_topic": {
-
-    }
-}
+def mqtt_threaded_client_exception_catcher(func):
+    def wrapper(*args):
+        try:
+            return func(*args)
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger = args[0]._logger
+            logger.error("{client_id} {function} \"{error}\" \"{tb}\"".format(client_id=args[0]._mqtt_client_my_id,
+                                                                                 function=str(func),
+                                                                                 error=str(e),
+                                                                                 tb=str(base64.b64encode(tb.encode("utf-8")), "utf-8")))
+    return wrapper
 
 
 class JobberMQTTThreadedClient(threading.Thread):
@@ -130,17 +132,24 @@ class JobberMQTTThreadedClient(threading.Thread):
         self._mqtt_client.connect(mqtt_broker_host, mqtt_broker_port, keep_alive)
 
     def on_connect(self, client, userdata, flags, rc):
-        self._logger.info(self._mqtt_client_my_id+"@* Connected with result code " + str(rc))
-
+        self._logger.info("\\CON\\ "+self._mqtt_client_my_id+"@* Connected with result code " + str(rc))
 
     def on_message(self, client, userdata, msg):
-        #self._logger.warning("Using base class JobberMQTTThreadedClient on_message, need to over load in implementing" +
-        #                    " subclass")
+        print("HERE")
+        #self._logger.info("\\RCV\\ "+self._mqtt_client_my_id+"@"+msg.topic+"\""+msg.payload+"\"")
 
         if msg.topic.endswith(".json"):
             payload = json.loads(msg.payload)
         else:
             payload = msg.payload
+
+    def jobber_publish(self, topic, payload):
+        self._logger.info("\\PUB\\ "+self._mqtt_client_my_id+"@"+topic+"\""+payload+"\"")
+        self._mqtt_client.publish(topic, payload)
+
+    def jobber_subscribe(self, topic):
+        self._logger.info("\\SUB\\ "+self._mqtt_client_my_id+"@"+topic)
+        self._mqtt_client.subscribe(topic)
 
 
     def run(self):
