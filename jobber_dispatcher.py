@@ -3,13 +3,84 @@
 # It'll probably make sense to break at least the job scheduling logic out at some point soon
 
 # This is going to assume the version of MQTT is lower than 5 with no native support for response topics in messages
+import datetime
+import binascii
 
 from jobber_mqtt_details import *
 
+import sqlalchemy
+import sqlalchemy.orm
+from sqlalchemy.ext.declarative import declarative_base
+
+Base = declarative_base()
+
+
+class Worker(Base):
+    __tablename__ = "worker"
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    last_heartbeat_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    results = sqlalchemy.orm.relationship("JobResult")
+
+
+class Job(Base):
+    __tablename__ = "job"
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
+    finished_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    last_updated_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    results = sqlalchemy.orm.relationship("JobResult")
+    offers = sqlalchemy.orm.relationship("JobResult")
+
+    human_description = sqlalchemy.Column(sqlalchemy.String)
+    descriptive_tags = sqlalchemy.Column(sqlalchemy.PickleType)
+
+    task = sqlalchemy.Column(sqlalchemy.String)
+    task_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
+
+    worker_requirements = sqlalchemy.Column(sqlalchemy.PickleType)
+
+    job_pattern = sqlalchemy.Column(sqlalchemy.String)
+    worker_pattern = sqlalchemy.Column(sqlalchemy.String)
+    results_pattern = sqlalchemy.Column(sqlalchemy.String)
+
+
+class JobResult(Base):
+    __tablename__ = "job_result"
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
+    timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
+    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
+    worker = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('worker.id'))
+    result = sqlalchemy.Column(sqlalchemy.BLOB)
+
+
+class JobOffer(Base):
+    __tablename__ = "job_offer"
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
+    closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
+
+
+result_pattern_each = "AFTER_EACH_CALLBACK"
+result_pattern_total = "AFTER_{total}_CALLBACK"
 
 class JobberDispatcher(JobberMQTTThreadedClient):
     # TODO Array of job dictionaries needs to be replaced by something like a DB for persistence
     jobs = {}
+    _db_engine = None
+    _db_session_maker = None
+
+    def __init__(self,
+                 db_connection_uri,
+                 thing_id,
+                 mqtt_broker_host, mqtt_broker_port=1883, keep_alive=60,
+                 client_id=None,
+                 do_connect=True,
+                 logger=logging.getLogger("mqtt_jobber.JobberWorker")):
+        super().__init__(thing_id, mqtt_broker_host, mqtt_broker_port, keep_alive, client_id, do_connect, logger)
+        self._db_engine = sqlalchemy.create_engine(db_connection_uri, echo=False)
+        Base.metadata.create_all(self._db_engine)
+        self._db_session_maker = sqlalchemy.orm.sessionmaker(bind=self._db_engine)
 
     @mqtt_threaded_client_exception_catcher
     def on_connect(self, client, userdata, flags, rc):
@@ -28,44 +99,44 @@ class JobberDispatcher(JobberMQTTThreadedClient):
         else:
             payload = msg.payload
 
-        if re.match("mqtt_jobber/offers/o([a-zA-Z0-9]*)\.json", msg.topic):
-            # response to an offer from a client
-            # TODO more efficient way to do these regexes without doing each match twice
-            offer = "o"+re.match("mqtt_jobber/offers/o([a-zA-Z0-9]*)\.json", msg.topic).groups()[0]
+        db_session = self._db_session_maker()
 
-            # TODO fix this search for job by offer id, it's inefficient and dumb
-            job = None
-            for job in self.jobs.values():
-                if offer == job["offer_id"]:
-                    break
-            if job is None or job["offer_id"] != offer:
-                self._logger.error("Could not find job with offer_is {}"+offer)
+        if re.match("mqtt_jobber/offers/([a-zA-Z0-9]*)\.json", msg.topic):
+            # response to an offer from a client
+
+            offer_id = re.match("mqtt_jobber/offers/([a-zA-Z0-9]*)\.json", msg.topic).groups()[0]
+            offer = db_session.query(JobOffer).filter_by(id=offer_id).one_or_none()
+            if offer is None:
+                self._logger.error("Could not find offer with id \"{offer_id} in DB\"".format(offer_id=offer_id))
                 return
 
-            self._logger.info("\\   \\ Worker {} wants to join job {} from offer {}".format(payload["client_id"], job["job_number"], offer))
+            self._logger.info("\\   \\ Worker {} wants to join job {} from offer {}".format(
+                payload["client_id"], offer.job, offer.id))
             # TODO Check to see if there are more workers needed
             self.jobber_publish("mqtt_jobber/workers/"+payload["client_id"]+"/contracts.json",
-                                json.dumps({"job_number": job["job_number"]}))
+                                json.dumps({"job_number": offer.job}))
 
-        elif re.match("mqtt_jobber/job/j([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
+        elif re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
             # Information from a worker about a job
-            job_number = re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic).groups()[0]
-
-            if job_number not in self.jobs.keys():
-                self._logger.error("Could not find job with number \"{}\" in jobs".format(job_number))
-                print(self.jobs.keys())
+            job_id = re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic).groups()[0]
+            job = db_session.query(Job).filter_by(id=job_id).one_or_none()
+            if job is None:
+                self._logger.warn("Can not create offer for job with id \"{id}\", no such id in DB".format(id=job_id))
                 return
 
-            job = self.jobs[job_number]
+            if payload["results"] is not None:
+                db_session.add(JobResult(id="r"+mqtt.base62(uuid.uuid4().int, padding=22),
+                          job=job.id,
+                          worker=payload["client_id"],
+                          result=binascii.a2b_base64(payload["results"])))
+                db_session.commit()
+
             if payload["job_state"] == 1:
                 self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] 💖 {worker_id}".format(
                     client_id=self._mqtt_client_my_id,
                     msg_id=msg.mid,
                     topic=msg.topic,
                     worker_id=payload["client_id"]))
-            elif payload["job_state"] == 0:
-                job["results"].append(payload["results"])
-                print(job["results"])
 
             # TODO update the job data
             # TODO refresh the worker's status in my job record to indicate that it's sent proof of life
@@ -76,36 +147,44 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                 topic=msg.topic))
 
     @mqtt_threaded_client_exception_catcher
-    def dispatch_job_offer(self, job):
+    def dispatch_job_offer(self, job_id):
+
+        db_session = self._db_session_maker()
+        job = db_session.query(Job).filter_by(id=job_id).one_or_none()
+        if job is None:
+            self._logger.warn("Can not create offer for job with id \"{id}\", no such id in DB".format(id=job_id))
+            return
+
+        # TODO Make sure the job is still valid
+        offer = JobOffer(id="o"+mqtt.base62(uuid.uuid4().int, padding=22),
+                         job=job.id)
+        db_session.add(offer)
+        db_session.commit()
 
         # Create / subscribe to topic for workers to offer services for new job
         # QUESTION is it better to subscribe to a wildcard topic
-        self.jobber_subscribe(jobber_topic_dispatcher_path.format(job_number=job["job_number"]))
-        self.jobber_subscribe(jobber_topic_offers_path.format(offer_id=job["offer_id"]))
-        self.jobs[job['job_number']] = job
+        self.jobber_subscribe(jobber_topic_dispatcher_path.format(job_number=job.id))
+        self.jobber_subscribe(jobber_topic_offers_path.format(offer_id=offer.id))
 
         job_offer = {
-            "description": job["description"],
-            "offer_id": job["offer_id"],
-            "worker_criteria": job["worker_criteria"]
+            "description": job.human_description,
+            "offer_id": offer.id,
+            "worker_criteria": None
         }
 
         self.jobber_publish("mqtt_jobber/dispatch.json", json.dumps(job_offer))
 
     @mqtt_threaded_client_exception_catcher
-    def new_job(self, description="", max_workers=-1, min_workers=-1, pattern=None):
-        # TODO Job needs to be persisted to some kind of DB
+    def new_job(self, description="", max_workers=-1, min_workers=-1, results_pattern=None):
         # TODO Look at SymPy for implementing worker criteria as modal logic expression
         #  https://docs.sympy.org/latest/index.html
-        job = {
-            "description": description,
-            "offer_id": "o"+mqtt.base62(uuid.uuid4().int, padding=22),
-            "job_number": "j"+mqtt.base62(uuid.uuid4().int, padding=22),
-            "max_workers": max_workers,
-            "min_workers": min_workers,
-            "worker_criteria": None,
-            "pattern": pattern,
-            "results": []
-        }
-        return job
+        db_session = self._db_session_maker()
+        job = Job(
+            id="j"+mqtt.base62(uuid.uuid4().int, padding=22),
+            human_description=description,
+            results_pattern=results_pattern
+        )
+        db_session.add(job)
+        db_session.commit()
+        return job.id
 

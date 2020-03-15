@@ -1,3 +1,5 @@
+import os
+
 from jobber_mqtt_details import *
 
 import jobber_worker
@@ -6,12 +8,12 @@ import jobber_dispatcher
 logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
                     level=logging.DEBUG,
                     datefmt='%Y-%m-%d %H:%M:%S')
-
-dispatcher = jobber_dispatcher.JobberDispatcher("dispatcher-thing", "localhost")
+os.remove("/tmp/db.sqlite")
+dispatcher = jobber_dispatcher.JobberDispatcher('sqlite:////tmp/db.sqlite', "dispatcher-thing", "localhost")
 dispatcher.start()
 
 workers = []
-for i in range(100):
+for i in range(10):
     workers.append(jobber_worker.JobberWorker("thing {}".format(i), "localhost"))
     workers[-1].start()
 

@@ -30,14 +30,31 @@ def mqtt_threaded_client_exception_catcher(func):
             tb = traceback.format_exc()
             logger = args[0]._logger
             logger.error("{client_id} {function} \"{error}\" \"{tb}\"".format(client_id=args[0]._mqtt_client_my_id,
-                                                                                 function=str(func),
-                                                                                 error=str(e),
-                                                                                 tb=str(base64.b64encode(tb.encode("utf-8")), "utf-8")))
+                                                                              function=str(func),
+                                                                              error=str(e),
+                                                                              tb=str(
+                                                                                  base64.b64encode(tb.encode("utf-8")),
+                                                                                  "utf-8")))
+
     return wrapper
 
 
-class JobberMQTTThreadedClient(threading.Thread):
+class JobberJob:
 
+    def __init__(self):
+        pass
+
+    def on_results_callback(self, result):
+        pass
+
+    def on_worker_finished_callback(self, result):
+        pass
+
+    def task(self, task_parameters):
+        pass
+
+
+class JobberMQTTThreadedClient(threading.Thread):
     _mqtt_client = None
     _mqtt_client_my_id = None
     _logger = None
@@ -63,7 +80,7 @@ class JobberMQTTThreadedClient(threading.Thread):
             client_id = "{}-{}".format(thing_id, mqtt.base62(uuid.uuid4().int))
         self._mqtt_client_my_id = client_id
 
-        logger = logging.getLogger("mqtt_jobber.JobberWorker."+self._mqtt_client_my_id)
+        logger = logging.getLogger("mqtt_jobber.JobberWorker." + self._mqtt_client_my_id)
 
         self._logger = logger
 
@@ -73,11 +90,11 @@ class JobberMQTTThreadedClient(threading.Thread):
         self._mqtt_client.connect(mqtt_broker_host, mqtt_broker_port, keep_alive)
 
     def on_connect(self, client, userdata, flags, rc):
-        self._logger.info("\\CON\\ "+self._mqtt_client_my_id+"@* Connected with result code " + str(rc))
+        self._logger.info("\\CON\\ " + self._mqtt_client_my_id + "@* Connected with result code " + str(rc))
 
     def on_message(self, client, userdata, msg):
         print("HERE")
-        #self._logger.info("\\RCV\\ "+self._mqtt_client_my_id+"@"+msg.topic+"\""+msg.payload+"\"")
+        # self._logger.info("\\RCV\\ "+self._mqtt_client_my_id+"@"+msg.topic+"\""+msg.payload+"\"")
 
         if msg.topic.endswith(".json"):
             payload = json.loads(msg.payload)
@@ -85,13 +102,12 @@ class JobberMQTTThreadedClient(threading.Thread):
             payload = msg.payload
 
     def jobber_publish(self, topic, payload):
-        self._logger.info("\\PUB\\ "+self._mqtt_client_my_id+"@"+topic+"\""+payload+"\"")
+        self._logger.info("\\PUB\\ " + self._mqtt_client_my_id + "@" + topic + "\"" + payload + "\"")
         self._mqtt_client.publish(topic, payload)
 
     def jobber_subscribe(self, topic):
-        self._logger.info("\\SUB\\ "+self._mqtt_client_my_id+"@"+topic)
+        self._logger.info("\\SUB\\ " + self._mqtt_client_my_id + "@" + topic)
         self._mqtt_client.subscribe(topic)
-
 
     def run(self):
         self._mqtt_client.loop_forever()
@@ -106,4 +122,3 @@ class JobberMQTTThreadedClient(threading.Thread):
     def __repr__(self):
         me = {"thing_id": self.thing_id, "client_id": self._mqtt_client_my_id}
         return json.dumps(me)
-

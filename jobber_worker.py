@@ -31,7 +31,8 @@ class JobberWorker(JobberMQTTThreadedClient):
                         i += 1
                     self._worker.send_heartbeat_for_job(self._job_number, i)
 
-                self._worker.work_finished_for_job(self._job_number, 0, results=i, message="DONES")
+                self._worker.work_finished_for_job(self._job_number, 0,
+                                                   results=base64.b64encode(str(i).encode()), message="DONES")
             else:
                 self._worker.work_finished_for_job(self._job_number, -1, results=None,
                                                    message="Don't know how to do task \"{task}\"".format(task=self._task))
