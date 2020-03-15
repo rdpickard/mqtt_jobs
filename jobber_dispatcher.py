@@ -45,15 +45,27 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             self._logger.info("\\   \\ Worker {} wants to join job {} from offer {}".format(payload["client_id"], job["job_number"], offer))
             # TODO Check to see if there are more workers needed
             self.jobber_publish("mqtt_jobber/workers/"+payload["client_id"]+"/contracts.json",
-                                      json.dumps({"job_number": job["job_number"]}))
+                                json.dumps({"job_number": job["job_number"]}))
 
         elif re.match("mqtt_jobber/job/j([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
             # Information from a worker about a job
-            self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] 💖 {worker_id}".format(
-                client_id=self._mqtt_client_my_id,
-                msg_id=msg.mid,
-                topic=msg.topic,
-                worker_id=payload["client_id"]))
+            job_number = re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic).groups()[0]
+
+            if job_number not in self.jobs.keys():
+                self._logger.error("Could not find job with number \"{}\" in jobs".format(job_number))
+                print(self.jobs.keys())
+                return
+
+            job = self.jobs[job_number]
+            if payload["job_state"] == 1:
+                self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] 💖 {worker_id}".format(
+                    client_id=self._mqtt_client_my_id,
+                    msg_id=msg.mid,
+                    topic=msg.topic,
+                    worker_id=payload["client_id"]))
+            elif payload["job_state"] == 0:
+                job["results"].append(payload["results"])
+                print(job["results"])
 
             # TODO update the job data
             # TODO refresh the worker's status in my job record to indicate that it's sent proof of life
@@ -93,6 +105,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             "min_workers": min_workers,
             "worker_criteria": None,
             "pattern": pattern,
+            "results": []
         }
         return job
 

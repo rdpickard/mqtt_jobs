@@ -11,7 +11,7 @@ dispatcher = jobber_dispatcher.JobberDispatcher("dispatcher-thing", "localhost")
 dispatcher.start()
 
 workers = []
-for i in range(1):
+for i in range(100):
     workers.append(jobber_worker.JobberWorker("thing {}".format(i), "localhost"))
     workers[-1].start()
 

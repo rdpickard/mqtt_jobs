@@ -13,66 +13,7 @@ import paho.mqtt.client as mqtt
 # QUESTION Should there be a generic message envelope to identify the payload type?
 # QUESTION Should the envelope include a response topic?
 # QUESTION Should the message envelope support cryptographic signing of the payload?
-jobbermessage_helloworld_schema = {
-  "$id": "https://example.com/person.schema.json",
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "helloworld jobber message",
-  "type": "object",
-  "properties": {
-    "thing_id": {
-      "type": "string",
-      "description": "The id of the sender. The id persists between thing reboots and joining of broker"
-    },
-    "message": {
-      "type": "string",
-      "description": "Generic message sent"
-    },
-  }
-}
 
-jobbermessage_joboffer_schema = {
-  "$id": "https://example.com/person.schema.json",
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "job offer jobber message",
-  "type": "object",
-  "properties": {
-    "offer_id": {
-      "type": "string",
-      "description": "The offer identifier. Not the same as the job. The offer is for recruiting workers, who are then"
-                     "directed to the right topic for the job"
-    },
-    "message": {
-      "type": "string",
-      "description": "Generic message sent"
-    },
-    "worker_thing_criteria": {
-        "type": "array",
-        "description": "list of criteria a worker must meet to accept a job"
-    }
-  }
-}
-
-# TODO need to specify timestamp format and tz
-jobbermessage_worker_heartbeat_message_schema = {
-    "$id": "https://example.com/person.schema.json",
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "job offer jobber message",
-    "type": "object",
-    "properties": {
-        "client_id": {
-            "type": "string",
-            "description": "ID of who is sending the heartbeat"
-        },
-        "sent_timestamp": {
-            "type": "string",
-            "description": "The time stamp of when the heartbeat was sent from the client"
-        },
-        "work_seq": {
-            "type": "integer",
-            "description": "How much work has been done since last heart beat"
-        }
-    }
-}
 jobbermessage_worker_heartbeat_message = {"client_id": None, "sent_timestamp": None}
 
 jobber_topic_offers_path = "mqtt_jobber/offers/{offer_id}.json"
