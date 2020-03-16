@@ -6,6 +6,7 @@ import logging
 import re
 import traceback
 import base64
+import datetime
 
 import paho.mqtt.client as mqtt
 
@@ -21,6 +22,69 @@ jobber_topic_workers_path = "mqtt_jobber/job/{job_number}/workers"
 jobber_topic_dispatcher_path = "mqtt_jobber/job/{job_number}/dispatcher.json"
 jobber_thing_client_message = "mqtt_jobber/thing/{thing_id}/{client_id}/incoming"
 
+result_pattern_each = "AFTER_EACH_CALLBACK"
+result_pattern_total = "AFTER_{total}_CALLBACK"
+
+tasks = {}
+
+import sqlalchemy
+import sqlalchemy.orm
+from sqlalchemy.ext.declarative import declarative_base
+
+Base = declarative_base()
+
+class Worker(Base):
+    __tablename__ = "worker"
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    last_heartbeat_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    results = sqlalchemy.orm.relationship("JobResult")
+
+
+class Job(Base):
+    __tablename__ = "job"
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
+    finished_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    last_updated_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    results = sqlalchemy.orm.relationship("JobResult")
+    offers = sqlalchemy.orm.relationship("JobResult")
+
+    human_description = sqlalchemy.Column(sqlalchemy.String)
+    descriptive_tags = sqlalchemy.Column(sqlalchemy.PickleType)
+
+    task = sqlalchemy.Column(sqlalchemy.String)
+    task_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
+
+    worker_requirements = sqlalchemy.Column(sqlalchemy.PickleType)
+
+    job_pattern = sqlalchemy.Column(sqlalchemy.String)
+    worker_pattern = sqlalchemy.Column(sqlalchemy.String)
+    results_pattern = sqlalchemy.Column(sqlalchemy.String)
+
+
+class JobResult(Base):
+    __tablename__ = "job_result"
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
+    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
+    worker = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('worker.id'))
+    result = sqlalchemy.Column(sqlalchemy.String)
+
+
+class JobOffer(Base):
+    __tablename__ = "job_offer"
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
+    closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
+
+
+def jobber():
+
+    def wrapper(self, *args):
+        tasks[self.name] = self
+
+    return wrapper
 
 def mqtt_threaded_client_exception_catcher(func):
     def wrapper(*args):
@@ -41,16 +105,16 @@ def mqtt_threaded_client_exception_catcher(func):
 
 class JobberJob:
 
-    def __init__(self):
+    @staticmethod
+    def on_results_callback(result, db_session):
         pass
 
-    def on_results_callback(self, result):
+    @staticmethod
+    def on_worker_finished_callback(result, db_session):
         pass
 
-    def on_worker_finished_callback(self, result):
-        pass
-
-    def task(self, task_parameters):
+    @staticmethod
+    def task(worker, job_id, task_parameters):
         pass
 
 

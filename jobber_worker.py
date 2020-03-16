@@ -8,35 +8,6 @@ class JobberWorker(JobberMQTTThreadedClient):
 
     thing_id = None
 
-    class JobberWorkerTaskRunner(threading.Thread):
-
-        _worker = None
-        _task = None
-        _task_parameters = None
-        _job_number = None
-
-        def __init__(self, worker, job_number, task, task_parameters):
-
-            threading.Thread.__init__(self)
-            self._worker = worker
-            self._task = task
-            self._task_parameters = task_parameters
-            self._job_number = job_number
-
-        def run(self):
-            if self._task == "count":
-                i = 0
-                while i < self._task_parameters["limit"]:
-                    for k in range(10):
-                        i += 1
-                    self._worker.send_heartbeat_for_job(self._job_number, i)
-
-                self._worker.work_finished_for_job(self._job_number, 0,
-                                                   results=base64.b64encode(str(i).encode()), message="DONES")
-            else:
-                self._worker.work_finished_for_job(self._job_number, -1, results=None,
-                                                   message="Don't know how to do task \"{task}\"".format(task=self._task))
-
     def on_connect(self, client, userdata, flags, rc):
         JobberMQTTThreadedClient.on_connect(self, client, userdata, flags, rc)
 
@@ -71,9 +42,10 @@ class JobberWorker(JobberMQTTThreadedClient):
                 # QUESTION is this correct? Is there any reason for the worker to get messages here
                 self.jobber_subscribe(jobber_topic_workers_path.format(job_number=payload["job_number"]))
                 self.send_heartbeat_for_job(payload["job_number"], 0)
-                workertask = self.JobberWorkerTaskRunner(worker=self, job_number=payload["job_number"],
-                                                         task="count", task_parameters={"limit": 100})
-                workertask.start()
+                jobb = tasks["count"]
+                thread = threading.Thread(target = jobb.task, args = (self, payload["job_number"], {"limit": 100}))
+                thread.start()
+
 
         except Exception as e:
             # TODO remove the following print with a correct log message
@@ -91,7 +63,7 @@ class JobberWorker(JobberMQTTThreadedClient):
                                         "message": None,
                                         "work_seq": work_sequence}))
 
-    def work_finished_for_job(self, job_number, finished_state, results= None, message=None):
+    def work_finished_for_job(self, job_number, finished_state, results=None, message=None):
         # TODO unsubscribe from the job topic
         # TODO Make sure the task thread is cleaned up ok
         self.jobber_publish(jobber_topic_dispatcher_path.format(job_number=job_number),

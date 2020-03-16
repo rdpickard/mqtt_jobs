@@ -8,61 +8,6 @@ import binascii
 
 from jobber_mqtt_details import *
 
-import sqlalchemy
-import sqlalchemy.orm
-from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
-
-
-class Worker(Base):
-    __tablename__ = "worker"
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    last_heartbeat_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    results = sqlalchemy.orm.relationship("JobResult")
-
-
-class Job(Base):
-    __tablename__ = "job"
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
-    finished_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    last_updated_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    results = sqlalchemy.orm.relationship("JobResult")
-    offers = sqlalchemy.orm.relationship("JobResult")
-
-    human_description = sqlalchemy.Column(sqlalchemy.String)
-    descriptive_tags = sqlalchemy.Column(sqlalchemy.PickleType)
-
-    task = sqlalchemy.Column(sqlalchemy.String)
-    task_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
-
-    worker_requirements = sqlalchemy.Column(sqlalchemy.PickleType)
-
-    job_pattern = sqlalchemy.Column(sqlalchemy.String)
-    worker_pattern = sqlalchemy.Column(sqlalchemy.String)
-    results_pattern = sqlalchemy.Column(sqlalchemy.String)
-
-
-class JobResult(Base):
-    __tablename__ = "job_result"
-    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
-    timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
-    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
-    worker = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('worker.id'))
-    result = sqlalchemy.Column(sqlalchemy.BLOB)
-
-
-class JobOffer(Base):
-    __tablename__ = "job_offer"
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
-    closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
-
-
-result_pattern_each = "AFTER_EACH_CALLBACK"
-result_pattern_total = "AFTER_{total}_CALLBACK"
 
 class JobberDispatcher(JobberMQTTThreadedClient):
     # TODO Array of job dictionaries needs to be replaced by something like a DB for persistence
@@ -89,10 +34,11 @@ class JobberDispatcher(JobberMQTTThreadedClient):
     # The callback for when a PUBLISH message is received from the server.
     @mqtt_threaded_client_exception_catcher
     def on_message(self, client, userdata, msg):
-        self._logger.info("\\RCV\\ {client_id}@{topic} [msg id={msg_id}]\"{payload}\"".format(client_id=self._mqtt_client_my_id,
-                                                                                              msg_id=msg.mid,
-                                                                                              topic=msg.topic,
-                                                                                              payload=msg.payload))
+        self._logger.info(
+            "\\RCV\\ {client_id}@{topic} [msg id={msg_id}]\"{payload}\"".format(client_id=self._mqtt_client_my_id,
+                                                                                msg_id=msg.mid,
+                                                                                topic=msg.topic,
+                                                                                payload=msg.payload))
 
         if msg.topic.endswith(".json"):
             payload = json.loads(msg.payload)
@@ -113,7 +59,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             self._logger.info("\\   \\ Worker {} wants to join job {} from offer {}".format(
                 payload["client_id"], offer.job, offer.id))
             # TODO Check to see if there are more workers needed
-            self.jobber_publish("mqtt_jobber/workers/"+payload["client_id"]+"/contracts.json",
+            self.jobber_publish("mqtt_jobber/workers/" + payload["client_id"] + "/contracts.json",
                                 json.dumps({"job_number": offer.job}))
 
         elif re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
@@ -125,11 +71,15 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                 return
 
             if payload["results"] is not None:
-                db_session.add(JobResult(id="r"+mqtt.base62(uuid.uuid4().int, padding=22),
-                          job=job.id,
-                          worker=payload["client_id"],
-                          result=binascii.a2b_base64(payload["results"])))
+                result = JobResult(id="r" + mqtt.base62(uuid.uuid4().int, padding=22),
+                                   job=job.id,
+                                   worker=payload["client_id"],
+                                   result=payload["results"])
+                db_session.add(result)
                 db_session.commit()
+
+                if payload["work_seq"] == -1:
+                    tasks["count"].on_worker_finished_callback(result, self._db_session_maker)
 
             if payload["job_state"] == 1:
                 self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] 💖 {worker_id}".format(
@@ -137,6 +87,8 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                     msg_id=msg.mid,
                     topic=msg.topic,
                     worker_id=payload["client_id"]))
+
+
 
             # TODO update the job data
             # TODO refresh the worker's status in my job record to indicate that it's sent proof of life
@@ -156,7 +108,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             return
 
         # TODO Make sure the job is still valid
-        offer = JobOffer(id="o"+mqtt.base62(uuid.uuid4().int, padding=22),
+        offer = JobOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22),
                          job=job.id)
         db_session.add(offer)
         db_session.commit()
@@ -180,11 +132,10 @@ class JobberDispatcher(JobberMQTTThreadedClient):
         #  https://docs.sympy.org/latest/index.html
         db_session = self._db_session_maker()
         job = Job(
-            id="j"+mqtt.base62(uuid.uuid4().int, padding=22),
+            id="j" + mqtt.base62(uuid.uuid4().int, padding=22),
             human_description=description,
             results_pattern=results_pattern
         )
         db_session.add(job)
         db_session.commit()
         return job.id
-
