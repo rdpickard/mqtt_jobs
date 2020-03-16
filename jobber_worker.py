@@ -46,7 +46,6 @@ class JobberWorker(JobberMQTTThreadedClient):
                 thread = threading.Thread(target = jobb.task, args = (self, payload["job_number"], {"limit": 100}))
                 thread.start()
 
-
         except Exception as e:
             # TODO remove the following print with a correct log message
             print(e)

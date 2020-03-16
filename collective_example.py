@@ -39,6 +39,7 @@ class CountJobber(JobberJob):
                                                       JobResult.worker == result.worker).all():
             print("res! "+result.worker)
 
+
 logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
                     level=logging.DEBUG,
                     datefmt='%Y-%m-%d %H:%M:%S')
@@ -46,7 +47,8 @@ logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s'
 if os.path.exists("/tmp/db.sqlite"):
     os.remove("/tmp/db.sqlite")
 
-dispatcher = jobber_dispatcher.JobberDispatcher('sqlite:////tmp/db.sqlite?check_same_thread=False', "dispatcher-thing", "localhost")
+dispatcher = jobber_dispatcher.JobberDispatcher('sqlite:////tmp/db.sqlite?check_same_thread=False',
+                                                "dispatcher-thing", "localhost")
 dispatcher.start()
 
 workers = []

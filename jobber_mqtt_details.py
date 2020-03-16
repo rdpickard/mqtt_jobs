@@ -8,6 +8,10 @@ import traceback
 import base64
 import datetime
 
+import sqlalchemy
+import sqlalchemy.orm
+from sqlalchemy.ext.declarative import declarative_base
+
 import paho.mqtt.client as mqtt
 
 # QUESTION Should these messages have version-ing?
@@ -27,11 +31,8 @@ result_pattern_total = "AFTER_{total}_CALLBACK"
 
 tasks = {}
 
-import sqlalchemy
-import sqlalchemy.orm
-from sqlalchemy.ext.declarative import declarative_base
-
 Base = declarative_base()
+
 
 class Worker(Base):
     __tablename__ = "worker"
@@ -85,6 +86,7 @@ def jobber():
         tasks[self.name] = self
 
     return wrapper
+
 
 def mqtt_threaded_client_exception_catcher(func):
     def wrapper(*args):
