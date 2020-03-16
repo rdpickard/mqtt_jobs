@@ -14,6 +14,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
     jobs = {}
     _db_engine = None
     _db_session_maker = None
+    _registered_job_types = dict()
 
     def __init__(self,
                  db_connection_uri,
@@ -55,12 +56,19 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             if offer is None:
                 self._logger.error("Could not find offer with id \"{offer_id} in DB\"".format(offer_id=offer_id))
                 return
+            job = db_session.query(Job).filter_by(id=offer.job).one_or_none()
+            if job is None:
+                self._logger.error("Could not find job with id \"{job_id} in DB\"".format(job_id=offer.job))
+                return
 
             self._logger.info("\\   \\ Worker {} wants to join job {} from offer {}".format(
                 payload["client_id"], offer.job, offer.id))
+
             # TODO Check to see if there are more workers needed
             self.jobber_publish("mqtt_jobber/workers/" + payload["client_id"] + "/contracts.json",
-                                json.dumps({"job_number": offer.job}))
+                                json.dumps({"job_number": offer.job,
+                                            "task_name": job.task_name,
+                                            "task_parameters": job.task_parameters}))
 
         elif re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
             # Information from a worker about a job
@@ -79,7 +87,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                 db_session.commit()
 
                 if payload["work_seq"] == -1:
-                    tasks["count"].on_worker_finished_callback(result, self._db_session_maker)
+                    self._registered_job_types[job.job_type_name]["task"].on_worker_finished_callback(result, self._db_session_maker)
 
             if payload["job_state"] == 1:
                 self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] 💖 {worker_id}".format(
@@ -87,8 +95,6 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                     msg_id=msg.mid,
                     topic=msg.topic,
                     worker_id=payload["client_id"]))
-
-
 
             # TODO update the job data
             # TODO refresh the worker's status in my job record to indicate that it's sent proof of life
@@ -99,17 +105,43 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                 topic=msg.topic))
 
     @mqtt_threaded_client_exception_catcher
-    def dispatch_job_offer(self, job_id):
+    def new_job(self, job_type_name, job_description, task_parameters, worker_requirements):
+
+        if job_type_name not in self._registered_job_types.keys():
+            self._logger.error("No such job type registered with name \"{name}\". Not dispatching any job".
+                               format(name=job_type_name))
+            return None
 
         db_session = self._db_session_maker()
+
+        job = Job(
+            id="j" + mqtt.base62(uuid.uuid4().int, padding=22),
+            job_type_name=job_type_name,
+            task_name=self._registered_job_types[job_type_name]["task"].name,
+            human_description=job_description,
+            results_pattern=self._registered_job_types[job_type_name]["results_pattern"],
+            worker_pattern=self._registered_job_types[job_type_name]["worker_pattern"],
+            job_pattern=self._registered_job_types[job_type_name]["job_pattern"],
+            task_parameters=task_parameters,
+            worker_requirements=worker_requirements
+        )
+        db_session.add(job)
+        db_session.commit()
+
+        return job.id
+
+    @mqtt_threaded_client_exception_catcher
+    def dispatch_job_offer(self, job_id, offer_description):
+
+        db_session = self._db_session_maker()
+
         job = db_session.query(Job).filter_by(id=job_id).one_or_none()
         if job is None:
-            self._logger.warn("Can not create offer for job with id \"{id}\", no such id in DB".format(id=job_id))
+            self._logger.error("Could not find job with id \"{job_id} in DB\"".format(job_id=job_id))
             return
 
         # TODO Make sure the job is still valid
-        offer = JobOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22),
-                         job=job.id)
+        offer = JobOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22), job=job.id)
         db_session.add(offer)
         db_session.commit()
 
@@ -121,21 +153,18 @@ class JobberDispatcher(JobberMQTTThreadedClient):
         job_offer = {
             "description": job.human_description,
             "offer_id": offer.id,
-            "worker_criteria": None
+            "task_name": job.task_name,
+            "worker_criteria": job.worker_requirements
         }
 
         self.jobber_publish("mqtt_jobber/dispatch.json", json.dumps(job_offer))
 
-    @mqtt_threaded_client_exception_catcher
-    def new_job(self, description="", max_workers=-1, min_workers=-1, results_pattern=None):
-        # TODO Look at SymPy for implementing worker criteria as modal logic expression
-        #  https://docs.sympy.org/latest/index.html
-        db_session = self._db_session_maker()
-        job = Job(
-            id="j" + mqtt.base62(uuid.uuid4().int, padding=22),
-            human_description=description,
-            results_pattern=results_pattern
-        )
-        db_session.add(job)
-        db_session.commit()
-        return job.id
+        return offer.id
+
+    def register_job_type(self, job_name, task, results_pattern=None, worker_pattern=None, job_pattern=None):
+        self._registered_job_types[job_name] = {
+            "task": task,
+            "results_pattern": results_pattern,
+            "worker_pattern": worker_pattern,
+            "job_pattern": job_pattern
+        }

@@ -8,6 +8,8 @@ class JobberWorker(JobberMQTTThreadedClient):
 
     thing_id = None
 
+    _registered_work_types = dict()
+
     def on_connect(self, client, userdata, flags, rc):
         JobberMQTTThreadedClient.on_connect(self, client, userdata, flags, rc)
 
@@ -34,16 +36,25 @@ class JobberWorker(JobberMQTTThreadedClient):
 
             if msg.topic == "mqtt_jobber/dispatch.json":
                 # New job offer
-                if self._do_i_meet_job_criteria(payload["worker_criteria"]):
-                    # send a message to the job offer topic that this worker is available
-                    self.jobber_publish(jobber_topic_offers_path.format(offer_id=payload['offer_id']), repr(self))
+                if payload["task_name"] not in self._registered_work_types.keys():
+                    self._logger.info("Don't know how to do work of type task \"{task_name}\"".format(task_name=payload["task_name"]))
+                    return
+                elif not self._do_i_meet_job_criteria(payload["worker_criteria"]):
+                    return
+
+                # send a message to the job offer topic that this worker is available
+                self.jobber_publish(jobber_topic_offers_path.format(offer_id=payload['offer_id']), repr(self))
+
             elif msg.topic == "mqtt_jobber/workers/" + self._mqtt_client_my_id + "/contracts.json":
                 # New job contract, join the job topic and send a hello
                 # QUESTION is this correct? Is there any reason for the worker to get messages here
                 self.jobber_subscribe(jobber_topic_workers_path.format(job_number=payload["job_number"]))
                 self.send_heartbeat_for_job(payload["job_number"], 0)
-                jobb = tasks["count"]
-                thread = threading.Thread(target = jobb.task, args = (self, payload["job_number"], {"limit": 100}))
+
+                jobb = self._registered_work_types[payload["task_name"]]["task"]
+                thread = threading.Thread(target = jobb.do_task, args = (self,
+                                                                      payload["job_number"],
+                                                                      payload["task_parameters"]))
                 thread.start()
 
         except Exception as e:
@@ -72,6 +83,11 @@ class JobberWorker(JobberMQTTThreadedClient):
                                         "results": results,
                                         "message": message,
                                         "work_seq": -1}))
+
+    def register_work_type(self, job_name, task):
+        self._registered_work_types[job_name] = {
+            "task": task
+        }
 
     def __repr__(self):
         me = {"thing_id": self.thing_id, "client_id": self._mqtt_client_my_id}

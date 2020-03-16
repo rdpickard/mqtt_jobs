@@ -44,6 +44,8 @@ class Worker(Base):
 class Job(Base):
     __tablename__ = "job"
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    task_name = sqlalchemy.Column(sqlalchemy.String)
+    job_type_name = sqlalchemy.Column(sqlalchemy.String)
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     finished_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     last_updated_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
@@ -77,15 +79,7 @@ class JobOffer(Base):
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
-
-
-def jobber():
-
-    def wrapper(self, *args):
-        tasks[self.name] = self
-
-    return wrapper
+    job = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('job.id'))
 
 
 def mqtt_threaded_client_exception_catcher(func):
@@ -105,7 +99,7 @@ def mqtt_threaded_client_exception_catcher(func):
     return wrapper
 
 
-class JobberJob:
+class JobberTask:
 
     @staticmethod
     def on_results_callback(result, db_session):
@@ -116,7 +110,7 @@ class JobberJob:
         pass
 
     @staticmethod
-    def task(worker, job_id, task_parameters):
+    def do_task(worker, job_id, task_parameters):
         pass
 
 
@@ -159,7 +153,6 @@ class JobberMQTTThreadedClient(threading.Thread):
         self._logger.info("\\CON\\ " + self._mqtt_client_my_id + "@* Connected with result code " + str(rc))
 
     def on_message(self, client, userdata, msg):
-        print("HERE")
         # self._logger.info("\\RCV\\ "+self._mqtt_client_my_id+"@"+msg.topic+"\""+msg.payload+"\"")
 
         if msg.topic.endswith(".json"):

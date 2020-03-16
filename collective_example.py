@@ -8,14 +8,13 @@ import jobber_worker
 import jobber_dispatcher
 
 
-@jobber()
-class CountJobber(JobberJob):
+class CountJobber(JobberTask):
 
     name = "count"
     results_pattern = result_pattern_each
 
     @staticmethod
-    def task(worker, job_id, task_parameters):
+    def do_task(worker, job_id, task_parameters):
         i = 0
         while i < task_parameters["limit"]:
             for k in range(10):
@@ -32,12 +31,12 @@ class CountJobber(JobberJob):
     @staticmethod
     def on_worker_finished_callback(result, db_session_maker):
         totals = 0
-        print("worker done "+result.worker)
 
         session = db_session_maker()
-        for result in session.query(JobResult).filter(JobResult.job == result.job,
-                                                      JobResult.worker == result.worker).all():
-            print("res! "+result.worker)
+        for result in session.query(JobResult).filter(JobResult.job == result.job).all():
+            res_dict = pickle.loads(codecs.decode(result.result.encode(), "base64"))
+            totals += res_dict["total"]
+        print("totals at {}".format(totals))
 
 
 logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
@@ -54,11 +53,15 @@ dispatcher.start()
 workers = []
 for i in range(3):
     workers.append(jobber_worker.JobberWorker("thing {}".format(i), "localhost"))
+    workers[-1].register_work_type("count", CountJobber)
     workers[-1].start()
 
 time.sleep(2)
 
-dispatcher.dispatch_job_offer(dispatcher.new_job("news jobs"))
+
+dispatcher.register_job_type("count", CountJobber)
+count_job_id = dispatcher.new_job("count", "count to 100", {"limit": 1}, {})
+dispatcher.dispatch_job_offer(count_job_id, "first offer")
 
 # Loop doing nothing in the main thread. Will break with a TERM signal from a ^C or equivalent
 try:
