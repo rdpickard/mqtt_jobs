@@ -8,7 +8,7 @@ import jobber_worker
 import jobber_dispatcher
 
 
-class CountJobber(JobberTask):
+class CountJobber(Job):
 
     name = "count"
     results_pattern = result_pattern_each
@@ -33,8 +33,8 @@ class CountJobber(JobberTask):
         totals = 0
 
         session = db_session_maker()
-        for result in session.query(JobResult).filter(JobResult.job == result.job).all():
-            res_dict = pickle.loads(codecs.decode(result.result.encode(), "base64"))
+        for r in session.query(ConsignmentResult).filter(ConsignmentResult.consignment == result.consignment).all():
+            res_dict = ConsignmentResult.decode_result(r.result, r.result_ecoding)
             totals += res_dict["total"]
         print("totals at {}".format(totals))
 
@@ -59,7 +59,6 @@ for i in range(3):
 time.sleep(2)
 
 
-dispatcher.register_job_type("count", CountJobber)
 count_job_id = dispatcher.new_job("count", "count to 100", {"limit": 1}, {})
 dispatcher.dispatch_job_offer(count_job_id, "first offer")
 

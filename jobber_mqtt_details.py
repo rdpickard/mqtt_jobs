@@ -7,6 +7,8 @@ import re
 import traceback
 import base64
 import datetime
+import codecs
+import pickle
 
 import sqlalchemy
 import sqlalchemy.orm
@@ -41,45 +43,176 @@ class Worker(Base):
     results = sqlalchemy.orm.relationship("JobResult")
 
 
-class Job(Base):
-    __tablename__ = "job"
+class Consignment(Base):
+    __tablename__ = "consignment"
+
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    task_name = sqlalchemy.Column(sqlalchemy.String)
-    job_type_name = sqlalchemy.Column(sqlalchemy.String)
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     finished_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     last_updated_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    results = sqlalchemy.orm.relationship("JobResult")
-    offers = sqlalchemy.orm.relationship("JobResult")
 
-    human_description = sqlalchemy.Column(sqlalchemy.String)
-    descriptive_tags = sqlalchemy.Column(sqlalchemy.PickleType)
-
-    task = sqlalchemy.Column(sqlalchemy.String)
-    task_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
-
+    offers = sqlalchemy.orm.relationship("ConsignmentOffer")
+    work_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
     worker_requirements = sqlalchemy.Column(sqlalchemy.PickleType)
+    worker_pattern = sqlalchemy.Column(sqlalchemy.String)
+    results = sqlalchemy.orm.relationship("JobResult")
 
     job_pattern = sqlalchemy.Column(sqlalchemy.String)
-    worker_pattern = sqlalchemy.Column(sqlalchemy.String)
     results_pattern = sqlalchemy.Column(sqlalchemy.String)
 
+    job = sqlalchemy.Column(sqlalchemy.String)
+    description = sqlalchemy.Column(sqlalchemy.String)
 
-class JobResult(Base):
-    __tablename__ = "job_result"
+    def dump_json_dispatcher_message(self):
+        json_dict = {
+            "id": self.id,
+            "work_parameters": self.work_parameters,
+            "job_pattern": self.job_pattern,
+            "job": self.job,
+        }
+        return json_dict
+
+
+class ConsignmentOffer(Base):
+    __tablename__ = "consignment_offer"
+
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
-    job = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('job.id'))
-    worker = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('worker.id'))
-    result = sqlalchemy.Column(sqlalchemy.String)
 
-
-class JobOffer(Base):
-    __tablename__ = "job_offer"
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    job = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('job.id'))
+    ttl_in_seconds = sqlalchemy.Column(sqlalchemy.Integer)
+    consignment = sqlalchemy.orm.relationship("Consignment")
+
+    def dispatcher_dump_json_message(self):
+        json_dict = {
+            "offer_id": self.id,
+            "worker_criteria": self.consignment.worker_requirements,
+            "job": self.consignment.job,
+            "ttl": self.ttl_in_seconds
+        }
+        return json_dict
+
+    def dispatcher_send_client_consignment_details(self, jobber_mqtt_client, client_id):
+        jobber_mqtt_client.jobber_publish(jobber_topic_offers_path.format(offer_id=self.id),
+                                          json.dumps(msg))
+
+    @staticmethod
+    def client_send_accept_offer(consignment_offer_id, jobber_mqtt_client):
+
+        msg = {
+            "client_id": jobber_mqtt_client.client_id,
+            "offer_id": consignment_offer_id
+        }
+
+        jobber_mqtt_client.jobber_publish(jobber_topic_offers_path.format(offer_id=consignment_offer_id),
+                                          json.dumps(msg))
+
+
+
+
+class ConsignmentResult(Base):
+    __tablename__ = "job_result"
+
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    consignment = sqlalchemy.orm.relationship("Consignment")
+    timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
+    received_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    worker = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('worker.id'))
+    result = sqlalchemy.Column(sqlalchemy.String)
+    result_encoding = sqlalchemy.Column(sqlalchemy.String)
+    work_state = sqlalchemy.Column(sqlalchemy.Integer)
+    work_sequence_number = sqlalchemy.Column(sqlalchemy.Integer)
+
+    WORK_STATE_ONGOING = 1
+    WORK_STATE_FINISHED = 10
+
+    @staticmethod
+    def load_from_message(mqtt_message_dict, mqtt_topic, logger):
+        try:
+          consignment_id = re.match("mqtt_jobber/consignment/([a-zA-Z0-9]*)/dispatcher.json").groups()[0]
+        except IndexError:
+            logger.error("Could not find expected consignment id in topic \"{topic}\"".format(topic=mqtt_topic))
+            return
+
+        result = ConsignmentResult()
+        result.consignment = consignment_id
+        result.received_timestamp_utc = datetime.datetime.utcnow()
+        result.timestamp_utc = mqtt_message_dict["sent_timestamp"]
+        result.worker = mqtt_message_dict["client_id"]
+        result.result = mqtt_message_dict["results"]
+        result.result_encoding = mqtt_message_dict["results_encoding"]
+        result.work_state = mqtt_message_dict["work_state"]
+        result.work_sequence_number = mqtt_message_dict["work_seq"]
+        result.message = mqtt_message_dict["message"]
+
+        return result
+
+    @staticmethod
+    def encode_dict_result(res):
+        if type(res) is dict:
+            return codecs.encode(pickle.dumps(res), "base64"), "pickle_base64"
+
+    @staticmethod
+    def decode_result(result, result_encoding, logger=logging.getLogger("jobber")):
+        if type(result_encoding) == "pickle_base64":
+            return codecs.encode(pickle.dumps(result), "base64")
+        else:
+            logger.warning("Can decode results for ConsignmentResult result encoding \"{encoding}\" isn't implemented".format(encoding=result_encoding))
+            return None
+
+    @staticmethod
+    def send_update(consignment_id, jobber_mqtt_client, result, message, work_state, work_sequence,
+                    logger=logging.getLogger("jobber")):
+        if result is not None and type(result) is not str:
+            logger.error("Result value must be a string.")
+            return
+
+        msg = {
+            "client_id": jobber_mqtt_client.client_id,
+            "sent_timestamp": datetime.datetime.utcnow(),
+            "work_state": work_state,
+            "results": result,
+            "message": message,
+            "work_seq": work_sequence
+        }
+
+        jobber_mqtt_client.jobber_publish(jobber_topic_dispatcher_path.format(job_number=consignment_id),
+                                          json.dumps(msg))
+
+    @staticmethod
+    def send_result(consignment_id, jobber_mqtt_client, result, work_sequence_number, logger):
+        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client, result, None,
+                                      ConsignmentResult.WORK_STATE_ONGOING, work_sequence_number,
+                                      logger)
+
+    @staticmethod
+    def send_heartbeat(consignment_id, jobber_mqtt_client, work_sequence_number, logger):
+        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client, None, None,
+                                      ConsignmentResult.WORK_STATE_ONGOING, work_sequence_number,
+                                      logger)
+
+    @staticmethod
+    def send_finished(consignment_id, jobber_mqtt_client, result, work_sequence_number, logger):
+        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client, result, None,
+                                      ConsignmentResult.WORK_STATE_FINISHED, work_sequence_number,
+                                      logger)
+
+
+class Job:
+
+    name = None
+
+    @staticmethod
+    def on_results_callback(result, db_session):
+        pass
+
+    @staticmethod
+    def on_worker_finished_callback(result, db_session):
+        pass
+
+    @staticmethod
+    def do_task(worker, job_id, task_parameters):
+        pass
 
 
 def mqtt_threaded_client_exception_catcher(func):
@@ -97,21 +230,6 @@ def mqtt_threaded_client_exception_catcher(func):
                                                                                   "utf-8")))
 
     return wrapper
-
-
-class JobberTask:
-
-    @staticmethod
-    def on_results_callback(result, db_session):
-        pass
-
-    @staticmethod
-    def on_worker_finished_callback(result, db_session):
-        pass
-
-    @staticmethod
-    def do_task(worker, job_id, task_parameters):
-        pass
 
 
 class JobberMQTTThreadedClient(threading.Thread):

@@ -10,8 +10,7 @@ from jobber_mqtt_details import *
 
 
 class JobberDispatcher(JobberMQTTThreadedClient):
-    # TODO Array of job dictionaries needs to be replaced by something like a DB for persistence
-    jobs = {}
+
     _db_engine = None
     _db_session_maker = None
     _registered_job_types = dict()
@@ -32,7 +31,6 @@ class JobberDispatcher(JobberMQTTThreadedClient):
     def on_connect(self, client, userdata, flags, rc):
         JobberMQTTThreadedClient.on_connect(self, client, userdata, flags, rc)
 
-    # The callback for when a PUBLISH message is received from the server.
     @mqtt_threaded_client_exception_catcher
     def on_message(self, client, userdata, msg):
         self._logger.info(
@@ -105,66 +103,55 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                 topic=msg.topic))
 
     @mqtt_threaded_client_exception_catcher
-    def new_job(self, job_type_name, job_description, task_parameters, worker_requirements):
-
-        if job_type_name not in self._registered_job_types.keys():
-            self._logger.error("No such job type registered with name \"{name}\". Not dispatching any job".
-                               format(name=job_type_name))
-            return None
+    def new_consignment(self, job_name, description, job_parameters, worker_requirements,
+                        results_pattern=None, worker_pattern=None, job_pattern=None):
 
         db_session = self._db_session_maker()
 
-        job = Job(
-            id="j" + mqtt.base62(uuid.uuid4().int, padding=22),
-            job_type_name=job_type_name,
-            task_name=self._registered_job_types[job_type_name]["task"].name,
-            human_description=job_description,
-            results_pattern=self._registered_job_types[job_type_name]["results_pattern"],
-            worker_pattern=self._registered_job_types[job_type_name]["worker_pattern"],
-            job_pattern=self._registered_job_types[job_type_name]["job_pattern"],
-            task_parameters=task_parameters,
+        consignment = Consignment(
+            id="c" + mqtt.base62(uuid.uuid4().int, padding=22),
+            description=description,
+            job=job_name,
+            results_pattern=results_pattern,
+            worker_pattern=worker_pattern,
+            job_pattern=job_pattern,
+            work_parameters=job_parameters,
             worker_requirements=worker_requirements
         )
-        db_session.add(job)
+        db_session.add(consignment)
         db_session.commit()
 
-        return job.id
+        return consignment.id
 
     @mqtt_threaded_client_exception_catcher
-    def dispatch_job_offer(self, job_id, offer_description):
+    def dispatch_consignment_offer(self, consignment_id, offer_description):
 
         db_session = self._db_session_maker()
 
-        job = db_session.query(Job).filter_by(id=job_id).one_or_none()
-        if job is None:
-            self._logger.error("Could not find job with id \"{job_id} in DB\"".format(job_id=job_id))
-            return
+        consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
+        if consignment is None:
+            self._logger.error("Could not find consignment with id \"{id} in DB\"".format(id=consignment_id))
+            return None
+        elif consignment.finished_timestamp_utc is not None:
+            self._logger.error("Tried to dispatch offer for consignment \"{id} which is already finished\"".format(id=consignment_id))
+            return None
 
-        # TODO Make sure the job is still valid
-        offer = JobOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22), job=job.id)
+        offer = ConsignmentOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22), consignment=consignment_id)
         db_session.add(offer)
         db_session.commit()
 
         # Create / subscribe to topic for workers to offer services for new job
         # QUESTION is it better to subscribe to a wildcard topic
-        self.jobber_subscribe(jobber_topic_dispatcher_path.format(job_number=job.id))
+        self.jobber_subscribe(jobber_topic_dispatcher_path.format(offer_id=offer.id))
         self.jobber_subscribe(jobber_topic_offers_path.format(offer_id=offer.id))
 
         job_offer = {
-            "description": job.human_description,
+            "description": offer_description,
             "offer_id": offer.id,
-            "task_name": job.task_name,
-            "worker_criteria": job.worker_requirements
+            "job_name": consignment.job,
+            "worker_criteria": consignment.worker_requirements
         }
 
         self.jobber_publish("mqtt_jobber/dispatch.json", json.dumps(job_offer))
 
         return offer.id
-
-    def register_job_type(self, job_name, task, results_pattern=None, worker_pattern=None, job_pattern=None):
-        self._registered_job_types[job_name] = {
-            "task": task,
-            "results_pattern": results_pattern,
-            "worker_pattern": worker_pattern,
-            "job_pattern": job_pattern
-        }

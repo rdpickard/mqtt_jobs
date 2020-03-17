@@ -43,7 +43,7 @@ class JobberWorker(JobberMQTTThreadedClient):
                     return
 
                 # send a message to the job offer topic that this worker is available
-                self.jobber_publish(jobber_topic_offers_path.format(offer_id=payload['offer_id']), repr(self))
+                ConsignmentOffer.client_send_accept_offer(payload['offer_id'], self)
 
             elif msg.topic == "mqtt_jobber/workers/" + self._mqtt_client_my_id + "/contracts.json":
                 # New job contract, join the job topic and send a hello
