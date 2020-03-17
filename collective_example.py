@@ -59,8 +59,8 @@ for i in range(3):
 time.sleep(2)
 
 
-count_job_id = dispatcher.new_job("count", "count to 100", {"limit": 1}, {})
-dispatcher.dispatch_job_offer(count_job_id, "first offer")
+count_job_id = dispatcher.new_consignment("count", "count to 100", {"limit": 100}, {})
+dispatcher.dispatch_consignment_offer(count_job_id, "first offer")
 
 # Loop doing nothing in the main thread. Will break with a TERM signal from a ^C or equivalent
 try:

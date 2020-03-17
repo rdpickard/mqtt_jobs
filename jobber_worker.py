@@ -10,6 +10,10 @@ class JobberWorker(JobberMQTTThreadedClient):
 
     _registered_work_types = dict()
 
+    @property
+    def client_id(self):
+        return self._mqtt_client_my_id
+
     def on_connect(self, client, userdata, flags, rc):
         JobberMQTTThreadedClient.on_connect(self, client, userdata, flags, rc)
 
@@ -36,8 +40,8 @@ class JobberWorker(JobberMQTTThreadedClient):
 
             if msg.topic == "mqtt_jobber/dispatch.json":
                 # New job offer
-                if payload["task_name"] not in self._registered_work_types.keys():
-                    self._logger.info("Don't know how to do work of type task \"{task_name}\"".format(task_name=payload["task_name"]))
+                if payload["job_name"] not in self._registered_work_types.keys():
+                    self._logger.info("Don't know how to do work of type task \"{job_name}\"".format(task_name=payload["job_name"]))
                     return
                 elif not self._do_i_meet_job_criteria(payload["worker_criteria"]):
                     return
@@ -59,7 +63,7 @@ class JobberWorker(JobberMQTTThreadedClient):
 
         except Exception as e:
             # TODO remove the following print with a correct log message
-            print(e)
+            self._logger.error(e)
 
     def _do_i_meet_job_criteria(self, criteria):
         return True

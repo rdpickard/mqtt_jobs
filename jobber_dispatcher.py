@@ -50,23 +50,20 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             # response to an offer from a client
 
             offer_id = re.match("mqtt_jobber/offers/([a-zA-Z0-9]*)\.json", msg.topic).groups()[0]
-            offer = db_session.query(JobOffer).filter_by(id=offer_id).one_or_none()
+            offer = db_session.query(ConsignmentOffer).filter_by(id=offer_id).one_or_none()
             if offer is None:
                 self._logger.error("Could not find offer with id \"{offer_id} in DB\"".format(offer_id=offer_id))
                 return
-            job = db_session.query(Job).filter_by(id=offer.job).one_or_none()
-            if job is None:
-                self._logger.error("Could not find job with id \"{job_id} in DB\"".format(job_id=offer.job))
+            consignment = db_session.query(Consignment).filter_by(id=offer.consignment_id).one_or_none()
+            if consignment is None:
+                self._logger.error("Could not find job with id \"{id} in DB\"".format(id=offer.consignment_id))
                 return
 
             self._logger.info("\\   \\ Worker {} wants to join job {} from offer {}".format(
-                payload["client_id"], offer.job, offer.id))
+                payload["client_id"], consignment.job_name, offer.id))
 
             # TODO Check to see if there are more workers needed
-            self.jobber_publish("mqtt_jobber/workers/" + payload["client_id"] + "/contracts.json",
-                                json.dumps({"job_number": offer.job,
-                                            "task_name": job.task_name,
-                                            "task_parameters": job.task_parameters}))
+            offer.dispatcher_send_client_consignment_details(self, payload["client_id"], )
 
         elif re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
             # Information from a worker about a job
@@ -111,7 +108,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
         consignment = Consignment(
             id="c" + mqtt.base62(uuid.uuid4().int, padding=22),
             description=description,
-            job=job_name,
+            job_name=job_name,
             results_pattern=results_pattern,
             worker_pattern=worker_pattern,
             job_pattern=job_pattern,
@@ -133,10 +130,11 @@ class JobberDispatcher(JobberMQTTThreadedClient):
             self._logger.error("Could not find consignment with id \"{id} in DB\"".format(id=consignment_id))
             return None
         elif consignment.finished_timestamp_utc is not None:
-            self._logger.error("Tried to dispatch offer for consignment \"{id} which is already finished\"".format(id=consignment_id))
+            self._logger.error("Tried to dispatch offer for consignment \"{id} which is already finished\"".
+                               format(id=consignment_id))
             return None
 
-        offer = ConsignmentOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22), consignment=consignment_id)
+        offer = ConsignmentOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22), consignment_id=consignment_id)
         db_session.add(offer)
         db_session.commit()
 
@@ -148,7 +146,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
         job_offer = {
             "description": offer_description,
             "offer_id": offer.id,
-            "job_name": consignment.job,
+            "job_name": consignment.job_name,
             "worker_criteria": consignment.worker_requirements
         }
 

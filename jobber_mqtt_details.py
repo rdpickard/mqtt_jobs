@@ -24,8 +24,8 @@ import paho.mqtt.client as mqtt
 jobbermessage_worker_heartbeat_message = {"client_id": None, "sent_timestamp": None}
 
 jobber_topic_offers_path = "mqtt_jobber/offers/{offer_id}.json"
-jobber_topic_workers_path = "mqtt_jobber/job/{job_number}/workers"
-jobber_topic_dispatcher_path = "mqtt_jobber/job/{job_number}/dispatcher.json"
+jobber_topic_workers_path = "mqtt_jobber/job/{offer_id}/workers"
+jobber_topic_dispatcher_path = "mqtt_jobber/job/{offer_id}/dispatcher.json"
 jobber_thing_client_message = "mqtt_jobber/thing/{thing_id}/{client_id}/incoming"
 
 result_pattern_each = "AFTER_EACH_CALLBACK"
@@ -40,7 +40,7 @@ class Worker(Base):
     __tablename__ = "worker"
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
     last_heartbeat_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    results = sqlalchemy.orm.relationship("JobResult")
+    results = sqlalchemy.orm.relationship("ConsignmentResult")
 
 
 class Consignment(Base):
@@ -55,12 +55,12 @@ class Consignment(Base):
     work_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
     worker_requirements = sqlalchemy.Column(sqlalchemy.PickleType)
     worker_pattern = sqlalchemy.Column(sqlalchemy.String)
-    results = sqlalchemy.orm.relationship("JobResult")
+    results = sqlalchemy.orm.relationship("ConsignmentResult")
 
     job_pattern = sqlalchemy.Column(sqlalchemy.String)
     results_pattern = sqlalchemy.Column(sqlalchemy.String)
 
-    job = sqlalchemy.Column(sqlalchemy.String)
+    job_name = sqlalchemy.Column(sqlalchemy.String)
     description = sqlalchemy.Column(sqlalchemy.String)
 
     def dump_json_dispatcher_message(self):
@@ -68,7 +68,7 @@ class Consignment(Base):
             "id": self.id,
             "work_parameters": self.work_parameters,
             "job_pattern": self.job_pattern,
-            "job": self.job,
+            "job_name": self.job_name,
         }
         return json_dict
 
@@ -81,6 +81,7 @@ class ConsignmentOffer(Base):
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     ttl_in_seconds = sqlalchemy.Column(sqlalchemy.Integer)
+    #consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
     consignment = sqlalchemy.orm.relationship("Consignment")
 
     def dispatcher_dump_json_message(self):
@@ -93,7 +94,8 @@ class ConsignmentOffer(Base):
         return json_dict
 
     def dispatcher_send_client_consignment_details(self, jobber_mqtt_client, client_id):
-        jobber_mqtt_client.jobber_publish(jobber_topic_offers_path.format(offer_id=self.id),
+        msg = self.consignment.dump_json_dispatcher_message()
+        jobber_mqtt_client.jobber_publish("mqtt_jobber/workers/{client_id}/contracts.json".format(client_id=client_id),
                                           json.dumps(msg))
 
     @staticmethod
@@ -108,13 +110,11 @@ class ConsignmentOffer(Base):
                                           json.dumps(msg))
 
 
-
-
 class ConsignmentResult(Base):
     __tablename__ = "job_result"
 
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    consignment = sqlalchemy.orm.relationship("Consignment")
+    consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
     timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     received_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     worker = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('worker.id'))
