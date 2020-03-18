@@ -83,8 +83,9 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                     msg_id=msg.mid,
                     topic=msg.topic,
                     worker_id=payload["client_id"]))
+
             if payload["work_state"] == ConsignmentResult.WORK_STATE_FINISHED:
-                self._registered_job_types[job.job_type_name]["task"].on_worker_finished_callback(result, self._db_session_maker)
+                registered_jobs[consignment.job_name].on_worker_finished_callback(db_session.query(ConsignmentResult).filter_by(client_id=payload["client_id"], consignment_id=consignment_id).all())
 
             # TODO update the job data
             # TODO refresh the worker's status in my job record to indicate that it's sent proof of life
@@ -101,7 +102,6 @@ class JobberDispatcher(JobberMQTTThreadedClient):
         db_session = self._db_session_maker()
 
         consignment = Consignment(
-            id="c" + mqtt.base62(uuid.uuid4().int, padding=22),
             description=description,
             job_name=job_name,
             results_pattern=results_pattern,
@@ -129,7 +129,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
                                format(id=consignment_id))
             return None
 
-        offer = ConsignmentOffer(id="o" + mqtt.base62(uuid.uuid4().int, padding=22), consignment_id=consignment_id)
+        offer = ConsignmentOffer(consignment_id=consignment_id)
         db_session.add(offer)
         db_session.commit()
 

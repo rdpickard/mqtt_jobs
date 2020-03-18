@@ -9,6 +9,8 @@ import base64
 import datetime
 import codecs
 import pickle
+import os
+import secrets
 
 import sqlalchemy
 import sqlalchemy.orm
@@ -36,17 +38,14 @@ registered_jobs = {}
 Base = declarative_base()
 
 
-class Worker(Base):
-    __tablename__ = "worker"
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    last_heartbeat_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    results = sqlalchemy.orm.relationship("ConsignmentResult")
+def random_hex_string(prefix: str = "", length: int = 22):
+    return "{prefix}{rando}".format(prefix=prefix, rando=secrets.token_hex(length))
 
 
 class Consignment(Base):
     __tablename__ = "consignment"
 
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True, default=random_hex_string("c", 22))
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     finished_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     last_updated_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
@@ -76,7 +75,7 @@ class Consignment(Base):
 class ConsignmentOffer(Base):
     __tablename__ = "consignment_offer"
 
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True, default=random_hex_string("co", 22))
 
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
@@ -113,11 +112,11 @@ class ConsignmentOffer(Base):
 class ConsignmentResult(Base):
     __tablename__ = "consignment_result"
 
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True, default="cr" + mqtt.base62(uuid.uuid4().int, padding=22))
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True, default=lambda :random_hex_string("cr", 22))
     consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
     timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     received_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
-    worker = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey('worker.id'))
+    client_id = sqlalchemy.Column(sqlalchemy.String)
     result = sqlalchemy.Column(sqlalchemy.String)
     result_encoding = sqlalchemy.Column(sqlalchemy.String)
     work_state = sqlalchemy.Column(sqlalchemy.Integer)
@@ -141,7 +140,7 @@ class ConsignmentResult(Base):
         result.consignment_id = consignment_id
         result.received_timestamp_utc = datetime.datetime.utcnow()
         result.timestamp_utc = datetime.datetime.fromisoformat(mqtt_message_dict["sent_timestamp"])
-        result.worker = mqtt_message_dict["client_id"]
+        result.client_id = mqtt_message_dict["client_id"]
         result.result = mqtt_message_dict["results"]
         result.result_encoding = mqtt_message_dict["results_encoding"]
         result.work_state = mqtt_message_dict["work_state"]
@@ -157,8 +156,8 @@ class ConsignmentResult(Base):
 
     @staticmethod
     def decode_result(result, result_encoding, logger=logging.getLogger("jobber")):
-        if type(result_encoding) == "pickle_base64":
-            return codecs.encode(pickle.dumps(result), "base64")
+        if result_encoding == "pickle_base64":
+            return pickle.loads(codecs.decode(result.encode(), 'base64'))
         else:
             logger.warning("Can decode results for ConsignmentResult result encoding \"{encoding}\" isn't implemented".format(encoding=result_encoding))
             return None
@@ -213,7 +212,7 @@ class ConsignmentResult(Base):
                                       logger)
 
 
-def registerjob(cls):
+def register_job(cls):
     print(cls.name)
     registered_jobs[cls.name] = cls
 
@@ -229,7 +228,7 @@ class Job:
         pass
 
     @staticmethod
-    def on_worker_finished_callback(result, db_session):
+    def on_worker_finished_callback(all_results_for_worker):
         pass
 
     @staticmethod
@@ -321,3 +320,73 @@ class JobberMQTTThreadedClient(threading.Thread):
     def __repr__(self):
         me = {"thing_id": self.thing_id, "client_id": self._mqtt_client_my_id}
         return json.dumps(me)
+
+
+results_patterns = {}
+
+class BehaviorPattern:
+    behavior_pattern = None
+    behavior_regex = None
+    behavior = None
+    description = None
+
+    def __init__(self, **kwargs):
+        self.behavior_regex = re.sub("{([a-zA-Z0-9]*)}", "(?P<\\1>.[a-zA-Z0-9]*)", self.behavior_pattern)
+        self.behavior = self.behavior_pattern.format(**kwargs)
+
+    def _eval(self, pattern):
+        m = re.match(self.behavior_regex, self.behavior)
+        if m is not None:
+            return m.group
+        else:
+            return None
+
+    def test(self, pattern, consignment, db_session):
+        return False
+
+    def __str__(self):
+        return self.behavior
+
+
+class BehaviorAfterNFinishedWorkers(BehaviorPattern):
+    behavior_pattern = "-AFTER_{count}_FINISHED_WORKERS-"
+
+    def test(self, pattern, consignment, db_session):
+        group = self._eval(pattern)
+        if group is None:
+            return False
+        finished_workers = db_session.query(ConsignmentResult).filter_by(consignment_id=consignment.id,
+                                                                         work_state=ConsignmentResult.WORK_STATE_FINISHED).count()
+        return finished_workers >= group('count')
+
+
+class BehaviorAfterNResults(BehaviorPattern):
+    behavior_pattern = "-AFTER_{count}_RESULTS-"
+
+    def test(self, pattern, consignment, db_session):
+        group = self._eval(pattern)
+        if group is None:
+            return False
+        return db_session.query(ConsignmentResult).filter_by(consignment_id=consignment.id).count() >= group('count')
+
+
+class BehaviorAfterNSecondsActivity(BehaviorPattern):
+    behavior_pattern = "-AFTER_{seconds}_SECONDS_ACTIVITY-"
+
+    def test(self, pattern, consignment, db_session):
+        group = self._eval(pattern)
+        if group is None:
+            return False
+        print(int(group('seconds')))
+        return (datetime.datetime.utcnow() - consignment.created_timestamp_utc).total_seconds() > int(group('seconds'))
+
+
+class PatternAfterNSecondsInactivity(BehaviorPattern):
+    behavior = "-AFTER_{seconds}_SECONDS_INACTIVITY-"
+
+    def test(self, pattern, consignment, db_session):
+        group = self._eval(pattern)
+        if group is None:
+            return False
+        return (consignment.last_updated_timestamp_utc - datetime.datetime.utcnow()).total_seconds() > int(group('seconds'))
+

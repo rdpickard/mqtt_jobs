@@ -8,7 +8,7 @@ import jobber_worker
 import jobber_dispatcher
 
 
-@registerjob
+@register_job
 class CountJobber(Job):
 
     name = "count"
@@ -20,26 +20,24 @@ class CountJobber(Job):
         while i < task_parameters["limit"]:
             for k in range(10):
                 i += 1
-            #worker.send_heartbeat_for_job(job_id, i)
             ConsignmentResult.send_heartbeat(job_id, worker, 0, worker.logger)
 
-        print(ConsignmentResult.encode_dict_result({"total": i}))
-        #results = codecs.encode(pickle.dumps({"total": i}), "base64")
-        #worker.work_finished_for_job(job_id, 0, results=results.decode(), message="DONE")
         ConsignmentResult.send_result(job_id, worker, *ConsignmentResult.encode_dict_result({"total": i}), 0, worker.logger)
         ConsignmentResult.send_finished(job_id, worker, worker.logger)
 
     @staticmethod
     def on_results_callback(result, db_session_maker):
-        print(result)
+        pass
 
     @staticmethod
-    def on_worker_finished_callback(result, db_session_maker):
-        totals = 0
+    def on_worker_finished_callback(all_results_for_worker):
+        pass
 
-        session = db_session_maker()
-        for r in session.query(ConsignmentResult).filter(ConsignmentResult.consignment == result.consignment).all():
-            res_dict = ConsignmentResult.decode_result(r.result, r.result_ecoding)
+    @staticmethod
+    def on_consignment_closed_callback(consignment):
+        totals = 0
+        for result in consignment.results:
+            res_dict = ConsignmentResult.decode_result(result.result, result.result_encoding)
             totals += res_dict["total"]
         print("totals at {}".format(totals))
 
