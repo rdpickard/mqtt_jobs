@@ -25,13 +25,13 @@ jobbermessage_worker_heartbeat_message = {"client_id": None, "sent_timestamp": N
 
 jobber_topic_offers_path = "mqtt_jobber/offers/{offer_id}.json"
 jobber_topic_workers_path = "mqtt_jobber/job/{offer_id}/workers"
-jobber_topic_dispatcher_path = "mqtt_jobber/job/{offer_id}/dispatcher.json"
+jobber_topic_dispatcher_path = "mqtt_jobber/job/{consignment_id}/dispatcher.json"
 jobber_thing_client_message = "mqtt_jobber/thing/{thing_id}/{client_id}/incoming"
 
 result_pattern_each = "AFTER_EACH_CALLBACK"
 result_pattern_total = "AFTER_{total}_CALLBACK"
 
-tasks = {}
+registered_jobs = {}
 
 Base = declarative_base()
 
@@ -81,8 +81,8 @@ class ConsignmentOffer(Base):
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     ttl_in_seconds = sqlalchemy.Column(sqlalchemy.Integer)
-    #consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
-    consignment = sqlalchemy.orm.relationship("Consignment")
+    consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
+    consignment = sqlalchemy.orm.relationship("Consignment", back_populates="offers")
 
     def dispatcher_dump_json_message(self):
         json_dict = {
@@ -111,9 +111,9 @@ class ConsignmentOffer(Base):
 
 
 class ConsignmentResult(Base):
-    __tablename__ = "job_result"
+    __tablename__ = "consignment_result"
 
-    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    id = sqlalchemy.Column(sqlalchemy.String, primary_key=True, default="cr" + mqtt.base62(uuid.uuid4().int, padding=22))
     consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
     timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     received_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
@@ -126,18 +126,21 @@ class ConsignmentResult(Base):
     WORK_STATE_ONGOING = 1
     WORK_STATE_FINISHED = 10
 
+    consignment = sqlalchemy.orm.relationship("Consignment",
+                                              back_populates="results")
+
     @staticmethod
     def load_from_message(mqtt_message_dict, mqtt_topic, logger):
         try:
-          consignment_id = re.match("mqtt_jobber/consignment/([a-zA-Z0-9]*)/dispatcher.json").groups()[0]
+            consignment_id = re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", mqtt_topic).groups()[0]
         except IndexError:
             logger.error("Could not find expected consignment id in topic \"{topic}\"".format(topic=mqtt_topic))
             return
 
         result = ConsignmentResult()
-        result.consignment = consignment_id
+        result.consignment_id = consignment_id
         result.received_timestamp_utc = datetime.datetime.utcnow()
-        result.timestamp_utc = mqtt_message_dict["sent_timestamp"]
+        result.timestamp_utc = datetime.datetime.fromisoformat(mqtt_message_dict["sent_timestamp"])
         result.worker = mqtt_message_dict["client_id"]
         result.result = mqtt_message_dict["results"]
         result.result_encoding = mqtt_message_dict["results_encoding"]
@@ -150,7 +153,7 @@ class ConsignmentResult(Base):
     @staticmethod
     def encode_dict_result(res):
         if type(res) is dict:
-            return codecs.encode(pickle.dumps(res), "base64"), "pickle_base64"
+            return codecs.encode(pickle.dumps(res), "base64").decode(), "pickle_base64"
 
     @staticmethod
     def decode_result(result, result_encoding, logger=logging.getLogger("jobber")):
@@ -161,41 +164,60 @@ class ConsignmentResult(Base):
             return None
 
     @staticmethod
-    def send_update(consignment_id, jobber_mqtt_client, result, message, work_state, work_sequence,
-                    logger=logging.getLogger("jobber")):
+    def send_update(consignment_id, jobber_mqtt_client,
+                    result, results_encoding,
+                    message,
+                    work_state, work_sequence,
+                    logger):
         if result is not None and type(result) is not str:
             logger.error("Result value must be a string.")
             return
 
         msg = {
             "client_id": jobber_mqtt_client.client_id,
-            "sent_timestamp": datetime.datetime.utcnow(),
+            "sent_timestamp": str(datetime.datetime.utcnow()),
             "work_state": work_state,
             "results": result,
+            "results_encoding": results_encoding,
             "message": message,
             "work_seq": work_sequence
         }
 
-        jobber_mqtt_client.jobber_publish(jobber_topic_dispatcher_path.format(job_number=consignment_id),
+        jobber_mqtt_client.jobber_publish(jobber_topic_dispatcher_path.format(consignment_id=consignment_id),
                                           json.dumps(msg))
 
     @staticmethod
-    def send_result(consignment_id, jobber_mqtt_client, result, work_sequence_number, logger):
-        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client, result, None,
+    def send_result(consignment_id, jobber_mqtt_client,
+                    result, results_encoding,
+                    work_sequence_number, logger):
+        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client,
+                                      result, results_encoding,
+                                      None,
                                       ConsignmentResult.WORK_STATE_ONGOING, work_sequence_number,
                                       logger)
 
     @staticmethod
     def send_heartbeat(consignment_id, jobber_mqtt_client, work_sequence_number, logger):
-        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client, None, None,
+        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client,
+                                      None, None,
+                                      None,
                                       ConsignmentResult.WORK_STATE_ONGOING, work_sequence_number,
                                       logger)
 
     @staticmethod
-    def send_finished(consignment_id, jobber_mqtt_client, result, work_sequence_number, logger):
-        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client, result, None,
-                                      ConsignmentResult.WORK_STATE_FINISHED, work_sequence_number,
+    def send_finished(consignment_id, jobber_mqtt_client, logger):
+        ConsignmentResult.send_update(consignment_id, jobber_mqtt_client,
+                                      None, None,
+                                      None,
+                                      ConsignmentResult.WORK_STATE_FINISHED, 0,
                                       logger)
+
+
+def registerjob(cls):
+    print(cls.name)
+    registered_jobs[cls.name] = cls
+
+    return cls
 
 
 class Job:

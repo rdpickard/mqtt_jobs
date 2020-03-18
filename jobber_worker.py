@@ -14,6 +14,10 @@ class JobberWorker(JobberMQTTThreadedClient):
     def client_id(self):
         return self._mqtt_client_my_id
 
+    @property
+    def logger(self):
+        return self._logger
+
     def on_connect(self, client, userdata, flags, rc):
         JobberMQTTThreadedClient.on_connect(self, client, userdata, flags, rc)
 
@@ -52,13 +56,14 @@ class JobberWorker(JobberMQTTThreadedClient):
             elif msg.topic == "mqtt_jobber/workers/" + self._mqtt_client_my_id + "/contracts.json":
                 # New job contract, join the job topic and send a hello
                 # QUESTION is this correct? Is there any reason for the worker to get messages here
-                self.jobber_subscribe(jobber_topic_workers_path.format(job_number=payload["job_number"]))
-                self.send_heartbeat_for_job(payload["job_number"], 0)
+                #self.jobber_subscribe(jobber_topic_workers_path.format(job_number=payload["job_number"]))
+                #self.send_heartbeat_for_job(payload["job_number"], 0)
+                self.jobber_subscribe(jobber_topic_workers_path.format(offer_id=payload["id"]))
 
-                jobb = self._registered_work_types[payload["task_name"]]["task"]
+                jobb = self._registered_work_types[payload["job_name"]]
                 thread = threading.Thread(target = jobb.do_task, args = (self,
-                                                                      payload["job_number"],
-                                                                      payload["task_parameters"]))
+                                                                      payload["id"],
+                                                                      payload["work_parameters"]))
                 thread.start()
 
         except Exception as e:
@@ -88,10 +93,8 @@ class JobberWorker(JobberMQTTThreadedClient):
                                         "message": message,
                                         "work_seq": -1}))
 
-    def register_work_type(self, job_name, task):
-        self._registered_work_types[job_name] = {
-            "task": task
-        }
+    def register_work_type(self, job_name, job):
+        self._registered_work_types[job_name] = job
 
     def __repr__(self):
         me = {"thing_id": self.thing_id, "client_id": self._mqtt_client_my_id}

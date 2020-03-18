@@ -67,29 +67,24 @@ class JobberDispatcher(JobberMQTTThreadedClient):
 
         elif re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic):
             # Information from a worker about a job
-            job_id = re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic).groups()[0]
-            job = db_session.query(Job).filter_by(id=job_id).one_or_none()
-            if job is None:
-                self._logger.warn("Can not create offer for job with id \"{id}\", no such id in DB".format(id=job_id))
+            consignment_id = re.match("mqtt_jobber/job/([a-zA-Z0-9]*)/dispatcher.json", msg.topic).groups()[0]
+            consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
+            if consignment is None:
+                self._logger.warn("Can not find consignment with ID \"{id}\"".format(id=consignment_id))
                 return
 
             if payload["results"] is not None:
-                result = JobResult(id="r" + mqtt.base62(uuid.uuid4().int, padding=22),
-                                   job=job.id,
-                                   worker=payload["client_id"],
-                                   result=payload["results"])
-                db_session.add(result)
+                consignment_result = ConsignmentResult.load_from_message(payload, msg.topic, self._logger)
+                db_session.add(consignment_result)
                 db_session.commit()
-
-                if payload["work_seq"] == -1:
-                    self._registered_job_types[job.job_type_name]["task"].on_worker_finished_callback(result, self._db_session_maker)
-
-            if payload["job_state"] == 1:
+            elif payload["work_state"] == 1:
                 self._logger.info("\\   \\ {client_id}@{topic} [msg id={msg_id}] 💖 {worker_id}".format(
                     client_id=self._mqtt_client_my_id,
                     msg_id=msg.mid,
                     topic=msg.topic,
                     worker_id=payload["client_id"]))
+            if payload["work_state"] == ConsignmentResult.WORK_STATE_FINISHED:
+                self._registered_job_types[job.job_type_name]["task"].on_worker_finished_callback(result, self._db_session_maker)
 
             # TODO update the job data
             # TODO refresh the worker's status in my job record to indicate that it's sent proof of life
@@ -140,7 +135,7 @@ class JobberDispatcher(JobberMQTTThreadedClient):
 
         # Create / subscribe to topic for workers to offer services for new job
         # QUESTION is it better to subscribe to a wildcard topic
-        self.jobber_subscribe(jobber_topic_dispatcher_path.format(offer_id=offer.id))
+        self.jobber_subscribe(jobber_topic_dispatcher_path.format(consignment_id=consignment.id))
         self.jobber_subscribe(jobber_topic_offers_path.format(offer_id=offer.id))
 
         job_offer = {

@@ -8,6 +8,7 @@ import jobber_worker
 import jobber_dispatcher
 
 
+@registerjob
 class CountJobber(Job):
 
     name = "count"
@@ -19,10 +20,14 @@ class CountJobber(Job):
         while i < task_parameters["limit"]:
             for k in range(10):
                 i += 1
-            worker.send_heartbeat_for_job(job_id, i)
+            #worker.send_heartbeat_for_job(job_id, i)
+            ConsignmentResult.send_heartbeat(job_id, worker, 0, worker.logger)
 
-        results = codecs.encode(pickle.dumps({"total": i}), "base64")
-        worker.work_finished_for_job(job_id, 0, results=results.decode(), message="DONE")
+        print(ConsignmentResult.encode_dict_result({"total": i}))
+        #results = codecs.encode(pickle.dumps({"total": i}), "base64")
+        #worker.work_finished_for_job(job_id, 0, results=results.decode(), message="DONE")
+        ConsignmentResult.send_result(job_id, worker, *ConsignmentResult.encode_dict_result({"total": i}), 0, worker.logger)
+        ConsignmentResult.send_finished(job_id, worker, worker.logger)
 
     @staticmethod
     def on_results_callback(result, db_session_maker):
