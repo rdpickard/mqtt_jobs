@@ -49,27 +49,103 @@ class Consignment(Base):
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow)
     finished_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     last_updated_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
+    ttl_in_seconds = sqlalchemy.Column(sqlalchemy.Integer, default=60)
 
     offers = sqlalchemy.orm.relationship("ConsignmentOffer")
     work_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
     worker_requirements = sqlalchemy.Column(sqlalchemy.PickleType)
-    worker_pattern = sqlalchemy.Column(sqlalchemy.String)
     results = sqlalchemy.orm.relationship("ConsignmentResult")
 
-    job_pattern = sqlalchemy.Column(sqlalchemy.String)
-    results_pattern = sqlalchemy.Column(sqlalchemy.String)
+    STATE_BEGUN = "BEGUN"
+    STATE_PARTIAL = "PARTIAL"
+    STATE_HEALTHY = "HEALTHY"
+    STATE_FINISHED = "FINISHED"
+    STATE_ABANDONED = "ABANDONED"
+    state = sqlalchemy.Column(sqlalchemy.String, default=STATE_BEGUN)
 
-    job_name = sqlalchemy.Column(sqlalchemy.String)
+    consignment_pattern_send_contract_to_client_when = sqlalchemy.Column(sqlalchemy.String)
+    consignment_pattern_begin_when = sqlalchemy.Column(sqlalchemy.String)
+    consignment_pattern_finish_when = sqlalchemy.Column(sqlalchemy.String)
+    consignment_pattern_abandon_when = sqlalchemy.Column(sqlalchemy.String)
+    consignment_pattern_reoffer_when = sqlalchemy.Column(sqlalchemy.String)
+    consignment_pattern_process_results_when = sqlalchemy.Column(sqlalchemy.String)
+
+    name = sqlalchemy.Column(sqlalchemy.String)
     description = sqlalchemy.Column(sqlalchemy.String)
 
-    def dump_json_dispatcher_message(self):
+    mqtt_client = None
+    _mqtt_results_topic = "mqtt_jobber/consignment/{consignment_id}/results.json"
+    _mqtt_consignment_client_contracts = "mqtt_jobber/clients/{client_id}/contracts"
+
+    logger = logging.getLogger("ConsignmentsLogger")
+
+    @property
+    def mqtt_results_topic(self):
+        return self._mqtt_results_topic.format(consignment_id=self.id)
+
+    def mqtt_topic_for_client_contract(self, client_id):
+        return self._mqtt_consignment_client_contracts.format(client_id=client_id)
+
+    def _format_log_message(self, message):
+        return "Consignment(\"{id}\") {message}".format(id=self.id, message=message)
+
+    def dump_json_contract(self):
         json_dict = {
             "id": self.id,
             "work_parameters": self.work_parameters,
-            "job_pattern": self.job_pattern,
-            "job_name": self.job_name,
+            "name": self.name,
         }
         return json_dict
+
+    def send_contract_to_client(self, client_id, consignment_offer_id):
+
+        consignment_offer = next(filter(lambda offer: offer.id == consignment_offer_id, self.offers))
+
+        if consignment_offer is None:
+            raise ValueError("Could not find consignment offer with id \"{id}\" for consignment \"{cid}\"".format(id=consignment_offer_id, cid=self.id))
+
+        if self.mqtt_client is None:
+            self.logger.warning(self._format_log_message("has no mqtt client, comms ignored"))
+        else:
+            msg = self.dump_json_contract()
+            self.mqtt_client.jobber_publish(self.mqtt_topic_for_client_contract(client_id), json.dumps(msg))
+
+    def finish(self):
+        self.finished_timestamp_utc = datetime.datetime.utcnow()
+        self.state = self.STATE_FINISHED
+
+    def begin(self):
+        print("Name is "+self.name)
+        if self.mqtt_client is None:
+            self.logger.warning(self._format_log_message("has no mqtt client, comms ignored"))
+        else:
+            self.mqtt_client.jobber_subscribe(self.mqtt_results_topic)
+            self.reoffer()
+
+    def abandon(self):
+        self.state = self.STATE_ABANDONED
+
+    def reoffer(self):
+
+        db_session = sqlalchemy.orm.session.object_session(self)
+        offer = ConsignmentOffer(consignment_id=self.id)
+
+        db_session.add(offer)
+        db_session.commit()
+
+        offer.dispatch(self.mqtt_client)
+
+        return offer.id
+
+    def process_results(self):
+        pass
+
+    def eval_behavior_patterns(self):
+        pass
+
+    @staticmethod
+    def do_task(worker, job_id, task_parameters):
+        pass
 
 
 class ConsignmentOffer(Base):
@@ -82,31 +158,43 @@ class ConsignmentOffer(Base):
     ttl_in_seconds = sqlalchemy.Column(sqlalchemy.Integer)
     consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
     consignment = sqlalchemy.orm.relationship("Consignment", back_populates="offers")
+    description = sqlalchemy.Column(sqlalchemy.String, default="opportunity awaits")
 
-    def dispatcher_dump_json_message(self):
-        json_dict = {
+    _mqtt_consignment_offers_dispatch_topic = "mqtt_jobber/offers/dispatch.json"
+    _mqtt_consignment_offers_replies_topic = "mqtt_jobber/offers/{consignment_id}/replies.json"
+
+    logger = logging.getLogger("ConsignmentsLogger")
+
+    @property
+    def mqtt_consignment_offers_replies_topic(self):
+        return self._mqtt_consignment_offers_replies_topic.format(self.id)
+
+    def _format_log_message(self, message):
+        return "Consignment Offer(\"{id}\") {message}".format(id=self.id, message=message)
+
+    def dispatch(self, mqtt_client):
+
+        mqtt_client.jobber_subscribe(jobber_topic_offers_path.format(offer_id=self.id))
+        print(self.consignment)
+        job_offer = {
+            "description": self.description,
             "offer_id": self.id,
-            "worker_criteria": self.consignment.worker_requirements,
-            "job": self.consignment.job,
-            "ttl": self.ttl_in_seconds
+            "job_name": self.consignment.name,
+            "worker_criteria": self.consignment.worker_requirements
         }
-        return json_dict
+        print("Hi there")
+        mqtt_client.jobber_publish("mqtt_jobber/dispatch.json", json.dumps(job_offer))
 
-    def dispatcher_send_client_consignment_details(self, jobber_mqtt_client, client_id):
-        msg = self.consignment.dump_json_dispatcher_message()
-        jobber_mqtt_client.jobber_publish("mqtt_jobber/workers/{client_id}/contracts.json".format(client_id=client_id),
-                                          json.dumps(msg))
 
     @staticmethod
-    def client_send_accept_offer(consignment_offer_id, jobber_mqtt_client):
+    def accept(self, mqtt_client, client_id):
 
         msg = {
-            "client_id": jobber_mqtt_client.client_id,
-            "offer_id": consignment_offer_id
+            "client_id": client_id,
+            "offer_id": self.id
         }
 
-        jobber_mqtt_client.jobber_publish(jobber_topic_offers_path.format(offer_id=consignment_offer_id),
-                                          json.dumps(msg))
+        mqtt_client.jobber_publish(self.mqtt_consignment_offers_replies_topic, json.dumps(msg))
 
 
 class ConsignmentResult(Base):
@@ -219,23 +307,6 @@ def register_job(cls):
     return cls
 
 
-class Job:
-
-    name = None
-
-    @staticmethod
-    def on_results_callback(result, db_session):
-        pass
-
-    @staticmethod
-    def on_worker_finished_callback(all_results_for_worker):
-        pass
-
-    @staticmethod
-    def do_task(worker, job_id, task_parameters):
-        pass
-
-
 def mqtt_threaded_client_exception_catcher(func):
     def wrapper(*args):
         try:
@@ -321,8 +392,6 @@ class JobberMQTTThreadedClient(threading.Thread):
         me = {"thing_id": self.thing_id, "client_id": self._mqtt_client_my_id}
         return json.dumps(me)
 
-
-results_patterns = {}
 
 class BehaviorPattern:
     behavior_pattern = None

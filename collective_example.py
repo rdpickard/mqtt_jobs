@@ -9,10 +9,10 @@ import jobber_dispatcher
 
 
 @register_job
-class CountJobber(Job):
+class CountJobber(Consignment):
 
-    name = "count"
-    results_pattern = result_pattern_each
+    def __init__(self):
+        self.job_name = "count"
 
     @staticmethod
     def do_task(worker, job_id, task_parameters):
@@ -25,18 +25,9 @@ class CountJobber(Job):
         ConsignmentResult.send_result(job_id, worker, *ConsignmentResult.encode_dict_result({"total": i}), 0, worker.logger)
         ConsignmentResult.send_finished(job_id, worker, worker.logger)
 
-    @staticmethod
-    def on_results_callback(result, db_session_maker):
-        pass
-
-    @staticmethod
-    def on_worker_finished_callback(all_results_for_worker):
-        pass
-
-    @staticmethod
-    def on_consignment_closed_callback(consignment):
+    def process_results(self):
         totals = 0
-        for result in consignment.results:
+        for result in self.results:
             res_dict = ConsignmentResult.decode_result(result.result, result.result_encoding)
             totals += res_dict["total"]
         print("totals at {}".format(totals))
@@ -61,6 +52,9 @@ for i in range(3):
 
 time.sleep(2)
 
+
+count_to_100 = CountJobber()
+count_to_100.consignment_pattern_close_when = count_to_100.consignment_pattern_process_results_when = (BehaviorAfterNFinishedWorkers(count=3))
 
 count_job_id = dispatcher.new_consignment("count", "count to 100", {"limit": 100}, {})
 dispatcher.dispatch_consignment_offer(count_job_id, "first offer")
