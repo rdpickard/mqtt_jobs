@@ -25,6 +25,7 @@ class CountJob(Consignment):
             totals += res_dict["total"]
         print("totals at {}".format(totals))
 
+
 logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
                     level=logging.DEBUG,
                     datefmt='%Y-%m-%d %H:%M:%S')
