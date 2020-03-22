@@ -19,9 +19,6 @@ class CountTask(consignmentshop.ConsignmentTask):
         shop_client.logger("Got task!")
 
 
-shoppe.task("count", CountTask)
-
-
 keeper = shoppe.consignment_keeper_factory([], 'sqlite:////tmp/db.sqlite?check_same_thread=False', "keeper", "localhost")
 
 clients = []

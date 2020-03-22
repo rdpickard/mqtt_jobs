@@ -34,6 +34,49 @@ class ConsignmentClientException(Exception):
     pass
 
 
+class ConsignmentThreadedTaskManager:
+
+    _tasks = None
+    _logger = None
+
+    def __init__(self, logger):
+        self._tasks = dict()
+
+    def add_task(self, name: str, task):
+        if name in self.tasks_available():
+            self._logger.warning("Overriding task '{name}'".format(name=name))
+        else:
+            self._logger.info("Adding task '{name}'".format(name=name))
+
+        self._tasks[name] = task
+
+    def task_for_name(self, name):
+        return self._tasks.get(name, None)
+
+    def tasks_available(self):
+        return self._tasks.keys()
+
+    def incoming_task_contract(self, contract_msg, shop_client, logger):
+
+        try:
+            payload = json.loads(contract_msg.payload)
+            jsonschema.validate(instance=payload, schema=msg_json_schema_contract)
+        except json.decoder.JSONDecodeError:
+            logger.warning("Offer response message payload isn't json. Ignoring message.")
+            logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=contract_msg.topic,
+                                                                                         payload=contract_msg.payload))
+            return
+
+        if payload['task_name'] not in self.tasks_available():
+            # TODO Add feedback to the keeper that this contract can't be honored
+            logger.warning("Task '{task_name}' isn't available for the worker. Ignoring contract message".format(task_name=payload['task_name']))
+            logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=contract_msg.topic,
+                                                                                         payload=contract_msg.payload))
+            return
+
+        logger.info("New contract!")
+
+
 class ConsignmentShop:
 
     _name = None
@@ -49,36 +92,15 @@ class ConsignmentShop:
     def __init__(self):
         pass
 
-    def task(self, task_name: str, task: ConsignmentTask):
-        if self._tasks is None:
-            self._tasks = {}
-        self._tasks[task_name] = task
-
-    @property
-    def tasks(self):
-        return self._tasks
-
-    def task_for_name(self, task_name: str):
-        return self._tasks.get(task_name, None)
-
-    @staticmethod
-    def new_contract(msg, shop_client, _):
-        payload = json.loads(msg.payload)
-        shop_client.logger.critical("I GOT THE JOB!")
-
-        ConsignmentResult.publish_result(shop_client,
-                                         "{}",
-                                         payload["offer_id"],
-                                         payload["consignment_id"],
-                                         0, False)
-
     @property
     def name(self):
         return self._name
 
     @staticmethod
     def consignment_worker_factory(tasks, client_id, mqtt_broker_host, mqtt_broker_port=1883):
+
         client = ConsignmentShopMQTTThreadedClient(client_id, mqtt_broker_host, mqtt_broker_port)
+        taskmgr = ConsignmentThreadedTaskManager(client.logger)
 
         # Listen for new offers
         client.subscribe_to_topic_with_callback(ConsignmentShop.topic_offers_dispatch,
@@ -86,7 +108,7 @@ class ConsignmentShop:
 
         # Listen for contracts to offers I bid for
         client.subscribe_to_topic_with_callback(ConsignmentShop.topic_worker_contracts.format(client_id=client_id),
-                                                ConsignmentShop.new_contract)
+                                                taskmgr.incoming_task_contract)
 
         client.send_heartbeat()
         client.start()
@@ -344,6 +366,7 @@ class ConsignmentContract(Base):
             "consignment_id": self.offer.consignment.id,
             "offer_id": self.offer.id,
             "contract_id": self.id,
+            "task_name": self.offer.consignment.task_name
         }
         return json.dumps(msg)
 
@@ -817,5 +840,5 @@ class ConsignmentTask:
         pass
 
     @staticmethod
-    def worker_do_task(shop_client, task_parameters):
+    def worker_task(shop_client, task_parameters):
         pass

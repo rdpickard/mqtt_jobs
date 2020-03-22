@@ -17,6 +17,33 @@ msg_json_schema_offer_response = {
 
 }
 
+msg_json_schema_contract = {
+    "$id": "https://example.com/person.schema.json",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Consignment Contract Message",
+    "type": "object",
+    "required": ["consignment_id", "task_name", "offer_id", "contract_id"],
+    "properties": {
+        "consignment_id": {
+            "type": "string",
+            "description": "The id of the consignment"
+        },
+        "task_name": {
+            "type": "string",
+            "description": "The task the consignment needs done"
+        },
+        "offer_id": {
+            "type": "string",
+            "description": "The id of the particular offer associated with consignment this contract is for"
+        },
+        "contract_id": {
+            "type": "string",
+            "description": "The id of the contract which is unique to the client"
+        },
+
+    }
+}
+
 msg_json_schema_offer = {
     "$id": "https://example.com/person.schema.json",
     "$schema": "http://json-schema.org/draft-07/schema#",
