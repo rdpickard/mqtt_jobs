@@ -9,7 +9,18 @@ import sqlalchemy.orm
 if os.path.exists("/tmp/db.sqlite"):
     os.remove("/tmp/db.sqlite")
 
-shoppe = consignmentshop.ConsignmentShop
+shoppe = consignmentshop.ConsignmentShop()
+
+
+class CountTask(consignmentshop.ConsignmentTask):
+
+    @staticmethod
+    def do_task(shop_client, task_parameters):
+        shop_client.logger("Got task!")
+
+
+shoppe.task("count", CountTask)
+
 
 keeper = shoppe.consignment_keeper_factory([], 'sqlite:////tmp/db.sqlite?check_same_thread=False', "keeper", "localhost")
 

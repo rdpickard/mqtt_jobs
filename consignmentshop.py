@@ -1,3 +1,5 @@
+from consignmentshop_message_schemas import *
+
 import logging
 import sys
 import threading
@@ -32,113 +34,32 @@ class ConsignmentClientException(Exception):
     pass
 
 
-msg_json_schema_offer_response = {
-    "$id": "https://example.com/person.schema.json",
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "Consignment Offer Response Message",
-    "type": "object",
-    "required": ["offer_id", "client_id"],
-    "properties": {
-        "offer_id": {
-            "type": "string",
-            "description": "The id of the offer"
-        },
-        "client_id": {
-            "type": "string",
-            "description": "Client that want the contract for the offer"
-        }
-    }
-
-}
-
-msg_json_schema_offer = {
-    "$id": "https://example.com/person.schema.json",
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "Consignment Offer Message",
-    "type": "object",
-    "required": ["offer_id", "task_name", "worker_parameters"],
-    "properties": {
-        "offer_id": {
-            "type": "string",
-            "description": "The id of the offer"
-        },
-        "task_name": {
-            "type": "string",
-            "description": "The task the offer need completed"
-        },
-        "worker_parameters": {
-            "type": "object",
-            "description": "The qualities a worker needs to complete the task"
-        }
-    }
-}
-
-msg_json_schema_heartbeat = {
-    "$id": "https://example.com/person.schema.json",
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "HeartBeat Message",
-    "type": "object",
-    "required": ["client_id", "description"],
-    "properties": {
-        "client_id": {
-            "type": "string",
-            "description": "The id of the client"
-        },
-        "description": {
-            "type": "object",
-            "description": "Dictionary of descriptors keyed off of descriptor name"
-        }
-    }
-}
-
-msg_json_schema_task_results = {
-    "$id": "https://example.com/person.schema.json",
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "Results Message",
-    "type": "object",
-    "required": ["client_id", "offer_id", "results", "results_encoding", "work_sequence", "finished", "sent_timestamp_utc"],
-    "properties": {
-        "client_id": {
-            "type": "string",
-            "description": "The id of the client"
-        },
-        "offer_id": {
-            "type": "string",
-            "description": "The id of the consignment offer the client is working off from"
-        },
-        "results": {
-            "type": "string",
-            "description": "The results of the task"
-        },
-        "results_encoding": {
-            "type": "string",
-            "description": "The encoding of the result value"
-        },
-        "work_sequence": {
-            "type": "integer",
-            "description": "The place in the order of all results this message represents"
-        },
-        "finished": {
-            "type": "boolean",
-            "description": "The worker is done."
-        },
-        "sent_timestamp_utc": {
-            "type": "string",
-            "description": "The time the result was sent from the worker"
-        }
-    }
-}
-
-
 class ConsignmentShop:
 
     _name = None
+    _tasks = None
+    _logger = None
 
     topic_offers_dispatch = "mqtt/workers/offers/dispatch"
     topic_worker_contracts = "mqtt/workers/{client_id}/contracts"
     topic_keeper_accepted_offer = "mqtt/keeper/offers/inbox"
     topic_consignment_results = "mqtt/keeper/consignment/{consignment_id}/results"
     topic_heartbeats = "mqtt/keeper/heartbeats"
+
+    def __init__(self):
+        pass
+
+    def task(self, task_name: str, task: ConsignmentTask):
+        if self._tasks is None:
+            self._tasks = {}
+        self._tasks[task_name] = task
+
+    @property
+    def tasks(self):
+        return self._tasks
+
+    def task_for_name(self, task_name: str):
+        return self._tasks.get(task_name, None)
 
     @staticmethod
     def new_contract(msg, shop_client, _):
@@ -597,9 +518,6 @@ class ConsignmentResult(Base):
                                      json.dumps(result_msg))
 
 
-class ConsignmentTask:
-    pass
-
 
 class ConsignmentWorkerShadow(Base):
 
@@ -874,3 +792,30 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
     @db_session_maker.setter
     def db_session_maker(self, db_session_maker):
         self._db_session_maker = db_session_maker
+
+
+class ConsignmentTask:
+
+    @staticmethod
+    def keeper_on_consignment_open(shop_client: ConsignmentShopMQTTThreadedClient, consignment: Consignment):
+        pass
+
+    @staticmethod
+    def keeper_on_new_worker(shop_client: ConsignmentShopMQTTThreadedClient, worker_shadow: ConsignmentWorkerShadow):
+        pass
+
+    @staticmethod
+    def keeper_on_result(shop_client: ConsignmentShopMQTTThreadedClient, result: ConsignmentResult):
+        pass
+
+    @staticmethod
+    def keeper_on_worker_finished(shop_client: ConsignmentShopMQTTThreadedClient, worker_shadow: ConsignmentWorkerShadow):
+        pass
+
+    @staticmethod
+    def keeper_on_consignment_completed(shop_client: ConsignmentShopMQTTThreadedClient, consignment: Consignment):
+        pass
+
+    @staticmethod
+    def worker_do_task(shop_client, task_parameters):
+        pass
