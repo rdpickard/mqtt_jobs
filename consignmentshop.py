@@ -41,6 +41,7 @@ class ConsignmentThreadedTaskManager:
 
     def __init__(self, logger):
         self._tasks = dict()
+        self._logger = logger
 
     def add_task(self, name: str, task):
         if name in self.tasks_available():
@@ -75,6 +76,12 @@ class ConsignmentThreadedTaskManager:
             return
 
         logger.info("New contract!")
+        # TODO Task execution should be in it's own thread
+
+        for res in self.task_for_name(payload['task_name']).task(shop_client, payload['task_parameters']):
+            ConsignmentResult.publish_result(shop_client, res, payload['offer_id'], payload['consignment_id'], 0)
+
+        ConsignmentResult.publish_result(shop_client, None, payload['offer_id'], payload['consignment_id'], 0, True)
 
 
 class ConsignmentShop:
@@ -102,6 +109,9 @@ class ConsignmentShop:
         client = ConsignmentShopMQTTThreadedClient(client_id, mqtt_broker_host, mqtt_broker_port)
         taskmgr = ConsignmentThreadedTaskManager(client.logger)
 
+        for task_name, task_class in tasks.items():
+            taskmgr.add_task(task_name, task_class)
+
         # Listen for new offers
         client.subscribe_to_topic_with_callback(ConsignmentShop.topic_offers_dispatch,
                                                 ConsignmentOffer.incoming_offer)
@@ -120,6 +130,10 @@ class ConsignmentShop:
     @staticmethod
     def consignment_keeper_factory(tasks, db_uri, client_id, mqtt_broker_host, mqtt_broker_port=1883, db_echo=False):
         client = ConsignmentShopMQTTThreadedClient(client_id, mqtt_broker_host, mqtt_broker_port)
+
+        client.task_manager = ConsignmentThreadedTaskManager(client.logger)
+        for task_name, task_class in tasks.items():
+            client.task_manager.add_task(task_name, task_class)
 
         db_engine = sqlalchemy.create_engine(db_uri, echo=db_echo)
         Base.metadata.create_all(db_engine)
@@ -153,7 +167,7 @@ class Consignment(Base):
     # TODO add descriptive tags to Consignment
 
     task_name = sqlalchemy.Column(sqlalchemy.String)
-    task_details = sqlalchemy.Column(sqlalchemy.PickleType)
+    task_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
     worker_parameters = sqlalchemy.Column(sqlalchemy.PickleType)
 
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow())
@@ -173,7 +187,7 @@ class Consignment(Base):
     offers = sqlalchemy.orm.relationship("ConsignmentOffer")
 
     @staticmethod
-    def new_consignment(shop_client, name: str, task_name: str, task_details: dict, worker_parameters: dict,
+    def new_consignment(shop_client, name: str, task_name: str, task_parameters: dict, worker_parameters: dict,
                         description: str = None, descriptive_details: dict = None):
 
         if shop_client.db_session_maker is None:
@@ -183,7 +197,7 @@ class Consignment(Base):
         consignment.id = gen_hex_id("C")
         consignment.name = name
         consignment.task_name = task_name
-        consignment.task_details = task_details
+        consignment.task_parameters = task_parameters
         consignment.worker_parameters = worker_parameters
         consignment.description = description
         consignment.descriptive_details = descriptive_details
@@ -214,6 +228,8 @@ class Consignment(Base):
         self.last_updated_timestamp_utc = datetime.datetime.utcnow()
         db_session.flush()
         db_session.commit()
+
+        shop_client.task_manager.task_for_name(self.task_name).on_consignment_open(shop_client, self)
 
         return offer
 
@@ -366,7 +382,8 @@ class ConsignmentContract(Base):
             "consignment_id": self.offer.consignment.id,
             "offer_id": self.offer.id,
             "contract_id": self.id,
-            "task_name": self.offer.consignment.task_name
+            "task_name": self.offer.consignment.task_name,
+            "task_parameters": self.offer.consignment.task_parameters
         }
         return json.dumps(msg)
 
@@ -401,8 +418,6 @@ class ConsignmentContract(Base):
 
         db_session.flush()
         db_session.commit()
-
-        shop_client.logger.critical("cons "+str(contract.offer_id))
 
         return contract
 
@@ -516,6 +531,8 @@ class ConsignmentResult(Base):
             db_session.flush()
             db_session.commit()
 
+            logger.info("Stored result!")
+
             # TODO Check consignment on what should be done when a result is stored (task callbacks)
 
         except sqlalchemy.orm.exc.MultipleResultsFound:
@@ -524,13 +541,28 @@ class ConsignmentResult(Base):
 
     @staticmethod
     def publish_result(shop_client, results: str, offer_id: str, consignment_id: str, work_sequence: int, finished=False):
+
         encoding_guess = ""
+        encoded_results = None
+
+        if results is None:
+            encoded_results = None
+            encoding_guess = None
+        elif type(results) is str:
+            encoded_results = results
+            encoding_guess = None
+        elif type(results) is dict:
+            encoded_results = json.dumps(results)
+            encoding_guess = "json"
+        elif type(results) is not str:
+            encoded_results = str(results)
+            encoding_guess = "str"
 
         result_msg = {
             "client_id": shop_client.client_id,
             "offer_id": offer_id,
             "consignment_id": consignment_id,
-            "results": results,
+            "results": encoded_results,
             "results_encoding": encoding_guess,
             "work_sequence": work_sequence,
             "finished": finished,
@@ -631,6 +663,8 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
     _worker_threads = None
 
     _db_session_maker = None
+
+    _task_manager = None
 
     def mqtt_threaded_client_exception_catcher(func):
 
@@ -816,29 +850,37 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
     def db_session_maker(self, db_session_maker):
         self._db_session_maker = db_session_maker
 
+    @property
+    def task_manager(self):
+        return self._task_manager
+
+    @task_manager.setter
+    def task_manager(self, task_manager):
+        self._task_manager = task_manager
+
 
 class ConsignmentTask:
 
     @staticmethod
-    def keeper_on_consignment_open(shop_client: ConsignmentShopMQTTThreadedClient, consignment: Consignment):
+    def on_consignment_open(shop_client: ConsignmentShopMQTTThreadedClient, consignment: Consignment):
         pass
 
     @staticmethod
-    def keeper_on_new_worker(shop_client: ConsignmentShopMQTTThreadedClient, worker_shadow: ConsignmentWorkerShadow):
+    def on_new_worker(shop_client: ConsignmentShopMQTTThreadedClient, worker_shadow: ConsignmentWorkerShadow):
         pass
 
     @staticmethod
-    def keeper_on_result(shop_client: ConsignmentShopMQTTThreadedClient, result: ConsignmentResult):
+    def on_result(shop_client: ConsignmentShopMQTTThreadedClient, result: ConsignmentResult):
         pass
 
     @staticmethod
-    def keeper_on_worker_finished(shop_client: ConsignmentShopMQTTThreadedClient, worker_shadow: ConsignmentWorkerShadow):
+    def on_worker_finished(shop_client: ConsignmentShopMQTTThreadedClient, worker_shadow: ConsignmentWorkerShadow):
         pass
 
     @staticmethod
-    def keeper_on_consignment_completed(shop_client: ConsignmentShopMQTTThreadedClient, consignment: Consignment):
+    def on_consignment_completed(shop_client: ConsignmentShopMQTTThreadedClient, consignment: Consignment):
         pass
 
     @staticmethod
-    def worker_task(shop_client, task_parameters):
+    def task(shop_client, task_parameters):
         pass

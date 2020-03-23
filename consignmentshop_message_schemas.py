@@ -40,6 +40,10 @@ msg_json_schema_contract = {
             "type": "string",
             "description": "The id of the contract which is unique to the client"
         },
+        "task_parameters": {
+            "type": "object",
+            "description": "The inputs for the task"
+        },
 
     }
 }
@@ -100,11 +104,11 @@ msg_json_schema_task_results = {
             "description": "The id of the consignment offer the client is working off from"
         },
         "results": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "The results of the task"
         },
         "results_encoding": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "The encoding of the result value"
         },
         "work_sequence": {
