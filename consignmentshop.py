@@ -42,6 +42,7 @@ class ConsignmentThreadedTaskManager:
     def __init__(self, logger):
         self._tasks = dict()
         self._logger = logger
+        _do_debug = False
 
     def add_task(self, name: str, task):
         if name in self.tasks_available():
@@ -78,9 +79,10 @@ class ConsignmentThreadedTaskManager:
         logger.info("New contract!")
         # TODO Task execution should be in it's own thread
 
-        for res in self.task_for_name(payload['task_name']).task(shop_client, payload['task_parameters']):
-            ConsignmentResult.publish_result(shop_client, res, payload['offer_id'], payload['consignment_id'], 0)
+        for seq, res in self.task_for_name(payload['task_name']).task(shop_client, payload['task_parameters']):
+            ConsignmentResult.publish_result(shop_client, res, payload['offer_id'], payload['consignment_id'], seq)
 
+        # Send results that the worker is finished
         ConsignmentResult.publish_result(shop_client, None, payload['offer_id'], payload['consignment_id'], 0, True)
 
 
@@ -89,6 +91,9 @@ class ConsignmentShop:
     _name = None
     _tasks = None
     _logger = None
+    _do_debug = False
+    _mqtt_broker_port = None
+    _mqtt_broker_host = None
 
     topic_offers_dispatch = "mqtt/workers/offers/dispatch"
     topic_worker_contracts = "mqtt/workers/{client_id}/contracts"
@@ -96,17 +101,31 @@ class ConsignmentShop:
     topic_consignment_results = "mqtt/keeper/consignment/{consignment_id}/results"
     topic_heartbeats = "mqtt/keeper/heartbeats"
 
-    def __init__(self):
-        pass
+    def __init__(self, mqtt_broker_host, mqtt_broker_port=1883, do_debug=False):
+        self._mqtt_broker_host = mqtt_broker_host
+        self._mqtt_broker_port = mqtt_broker_port
+        self._do_debug = do_debug
 
     @property
     def name(self):
         return self._name
 
-    @staticmethod
-    def consignment_worker_factory(tasks, client_id, mqtt_broker_host, mqtt_broker_port=1883):
+    @property
+    def do_debug(self):
+        return self._do_debug
 
-        client = ConsignmentShopMQTTThreadedClient(client_id, mqtt_broker_host, mqtt_broker_port)
+    @do_debug.setter
+    def do_debug(self, do):
+        self._do_debug = do
+
+    def consignment_worker_factory(self, client_id, tasks):
+
+        client = ConsignmentShopMQTTThreadedClient(client_id, self._mqtt_broker_host, self._mqtt_broker_port)
+        if self.do_debug:
+            client.logger.setLevel(logging.DEBUG)
+        else:
+            client.logger.setLevel(logging.INFO)
+
         taskmgr = ConsignmentThreadedTaskManager(client.logger)
 
         for task_name, task_class in tasks.items():
@@ -127,9 +146,12 @@ class ConsignmentShop:
 
         return client
 
-    @staticmethod
-    def consignment_keeper_factory(tasks, db_uri, client_id, mqtt_broker_host, mqtt_broker_port=1883, db_echo=False):
-        client = ConsignmentShopMQTTThreadedClient(client_id, mqtt_broker_host, mqtt_broker_port)
+    def consignment_keeper_factory(self, client_id, tasks, db_uri,  db_echo=False):
+        client = ConsignmentShopMQTTThreadedClient(client_id, self._mqtt_broker_host, self._mqtt_broker_port)
+        if self.do_debug:
+            client.logger.setLevel(logging.DEBUG)
+        else:
+            client.logger.setLevel(logging.INFO)
 
         client.task_manager = ConsignmentThreadedTaskManager(client.logger)
         for task_name, task_class in tasks.items():
@@ -154,6 +176,14 @@ class ConsignmentShop:
         client.start()
 
         return client
+
+    def eval_consignment_state(self, shop_client, consignment):
+
+        # P Has the TTL been exceeded
+        if datetime.datetime.utcnow() - consignment.datetime.datetime.utcnow() >= consignment.ttl_in_seconds:
+            shop_client.logger.debug("Closing consignment '{id}', TTL expired".format(id=consignment.id))
+            consignment.close(shop_client)
+            return
 
 
 class Consignment(Base):
@@ -182,6 +212,7 @@ class Consignment(Base):
     STATE_COMPLETED = "COMPLETED"
     STATE_ABANDONED = "ABANDONED"
     state = sqlalchemy.Column(sqlalchemy.String, default=STATE_NEW)
+    state_when_closed = sqlalchemy.Column(sqlalchemy.String)
 
     results = sqlalchemy.orm.relationship("ConsignmentResult")
     offers = sqlalchemy.orm.relationship("ConsignmentOffer")
@@ -210,6 +241,22 @@ class Consignment(Base):
         shop_client.subscribe_to_topic(ConsignmentShop.topic_consignment_results.format(consignment_id=consignment.id))
 
         return consignment
+
+    def close(self, shop_client):
+        if shop_client.db_session_maker is None:
+            raise ConsignmentClientException("Can't make new offer client has no db session maker")
+
+        db_session = shop_client.db_session_maker()
+        self.closed_timestamp_utc = datetime.datetime.utcnow()
+        self.state_when_closed = self.state
+        self.state = self.STATE_COMPLETED
+        db_session.flush()
+        db_session.commit()
+
+        for offer in self.offers:
+            offer.close()
+
+        return
 
     def make_new_offer(self, shop_client, offer_description="opportunity awaits from the top!"):
 
@@ -256,6 +303,16 @@ class ConsignmentOffer(Base):
     STATE_OPEN = "OPEN"
     STATE_CLOSED = "CLOSED"
     state = sqlalchemy.Column(sqlalchemy.String, default=STATE_LATENT)
+
+    def close(self, shop_client):
+        if shop_client.db_session_maker is None:
+            raise ConsignmentClientException("Can't close offer, client has no db session maker")
+        db_session = shop_client.db_session_maker()
+        self.closed_timestamp_utc = datetime.datetime.utcnow()
+        self.state = self.STATE_CLOSED
+        db_session.flush()
+        db_session.commit()
+        return
 
     @staticmethod
     def new_offer_for_consignment(shop_client, consignment, description="opportunity awaits", open_and_publish=True):
@@ -508,6 +565,11 @@ class ConsignmentResult(Base):
                 logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
                 return
 
+            nownow = datetime.datetime.utcnow()
+            if nownow > consignment.last_updated_timestamp_utc:
+                consignment.last_updated_timestamp_utc = nownow
+            db_session.flush()
+
             # P get the shadow of the worker that is reporting the results
             shadow = db_session.query(ConsignmentWorkerShadow).filter_by(client_id=payload['client_id']).one_or_none()
             if shadow is None:
@@ -540,7 +602,7 @@ class ConsignmentResult(Base):
             db_session.rollback()
 
     @staticmethod
-    def publish_result(shop_client, results: str, offer_id: str, consignment_id: str, work_sequence: int, finished=False):
+    def publish_result(shop_client, results, offer_id: str, consignment_id: str, work_sequence: int, finished=False):
 
         encoding_guess = ""
         encoded_results = None
@@ -571,7 +633,6 @@ class ConsignmentResult(Base):
 
         shop_client.publish_on_topic(ConsignmentShop.topic_consignment_results.format(consignment_id=consignment_id),
                                      json.dumps(result_msg))
-
 
 
 class ConsignmentWorkerShadow(Base):
@@ -700,10 +761,9 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
         if self._logger.handlers is None or len(self._logger.handlers) == 0:
             self._logger.addHandler(logging.StreamHandler(sys.stdout))
         for handler in self._logger.handlers:
-            handler.setLevel(logging.DEBUG)
             handler.setFormatter(formatter)
         self._logger = logging.LoggerAdapter(self._logger, {"client_id": self.client_id})
-        self._logger.setLevel(logging.DEBUG)
+        self._logger.setLevel(logging.INFO)
 
         # P set up the Paho mqtt client to use
         self._mqtt_client = mqtt.Client(client_id=self.client_id)

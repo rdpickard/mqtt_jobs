@@ -9,7 +9,7 @@ import sqlalchemy.orm
 if os.path.exists("/tmp/db.sqlite"):
     os.remove("/tmp/db.sqlite")
 
-shoppe = consignmentshop.ConsignmentShop()
+shoppe = consignmentshop.ConsignmentShop("localhost", do_debug=True)
 
 
 class CountTask(consignmentshop.ConsignmentTask):
@@ -21,27 +21,26 @@ class CountTask(consignmentshop.ConsignmentTask):
     @staticmethod
     def task(shop_client, task_parameters):
         shop_client.logger.info("Got task!")
-        yield task_parameters['limit']
+        yield 100, task_parameters['limit']
 
 
 clients = []
 keeper = None
 
 try:
-    keeper = shoppe.consignment_keeper_factory({"count": CountTask},
-                                               'sqlite:////tmp/db.sqlite?check_same_thread=False',
-                                               "keeper", "localhost")
+    keeper = shoppe.consignment_keeper_factory("keeper", {"count": CountTask},
+                                               'sqlite:////tmp/db.sqlite?check_same_thread=False'
+                                               )
 
     for i in range(1):
-        clients.append(shoppe.consignment_worker_factory({"count": CountTask},
-                                                         consignmentshop.gen_hex_id("worker-", 22), "localhost"))
+        clients.append(shoppe.consignment_worker_factory(consignmentshop.gen_hex_id("worker-", 22),
+                       {"count": CountTask}))
 
     time.sleep(2)
 
-    count_to_100_consignment = consignmentshop.Consignment.new_consignment(keeper, "count to 100", "count", {"limit": 100}, {})
-    offer = count_to_100_consignment.make_new_offer(keeper)
+    #count_to_100_consignment = consignmentshop.Consignment.new_consignment(keeper, "count to 100", "count", {"limit": 100}, {})
+    #offer = count_to_100_consignment.make_new_offer(keeper)
 
-    # TODO Need to create a task class for passing back control to when behaviors are triggered
     # TODO Need to test sending messages to defunct or closed consignments
 
     time.sleep(3)
@@ -51,4 +50,5 @@ except Exception as e:
 for client in clients:
     client.stop()
 
-keeper.stop()
+if keeper is not None:
+    keeper.stop()
