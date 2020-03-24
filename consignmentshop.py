@@ -16,6 +16,7 @@ import paho.mqtt.client as mqtt
 import sqlalchemy
 import sqlalchemy.orm
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import distinct
 
 import jsonschema
 
@@ -177,14 +178,6 @@ class ConsignmentShop:
 
         return client
 
-    def eval_consignment_state(self, shop_client, consignment):
-
-        # P Has the TTL been exceeded
-        if datetime.datetime.utcnow() - consignment.datetime.datetime.utcnow() >= consignment.ttl_in_seconds:
-            shop_client.logger.debug("Closing consignment '{id}', TTL expired".format(id=consignment.id))
-            consignment.close(shop_client)
-            return
-
 
 class Consignment(Base):
 
@@ -214,8 +207,11 @@ class Consignment(Base):
     state = sqlalchemy.Column(sqlalchemy.String, default=STATE_NEW)
     state_when_closed = sqlalchemy.Column(sqlalchemy.String)
 
-    results = sqlalchemy.orm.relationship("ConsignmentResult")
-    offers = sqlalchemy.orm.relationship("ConsignmentOffer")
+    results = sqlalchemy.orm.relationship("ConsignmentResult", back_populates="consignment")
+    offers = sqlalchemy.orm.relationship("ConsignmentOffer", back_populates="consignment")
+
+    healthy_pattern = sqlalchemy.Column(sqlalchemy.String)
+    completed_pattern = sqlalchemy.Column(sqlalchemy.String)
 
     @staticmethod
     def new_consignment(shop_client, name: str, task_name: str, task_parameters: dict, worker_parameters: dict,
@@ -239,6 +235,7 @@ class Consignment(Base):
         db_session.commit()
 
         shop_client.subscribe_to_topic(ConsignmentShop.topic_consignment_results.format(consignment_id=consignment.id))
+        db_session.close()
 
         return consignment
 
@@ -267,7 +264,7 @@ class Consignment(Base):
                 id=self.id, closed=self.closed_timestamp_utc, state=self.state
             ))
 
-        offer = ConsignmentOffer.new_offer_for_consignment(shop_client, self, offer_description)
+        offer = ConsignmentOffer.new_offer_for_consignment(shop_client, self.id, offer_description)
 
         db_session = shop_client.db_session_maker()
         if self.state == self.STATE_NEW:
@@ -280,9 +277,38 @@ class Consignment(Base):
 
         return offer
 
-    def send_more_contracts(self):
-        # TODO write code to evaluate if consignment needs more workers
-        return True
+    @staticmethod
+    def is_healthy_when(consignment_id, shop_client, pattern):
+
+        if shop_client.db_session_maker is None:
+            raise ConsignmentClientException("Can't make new offer client has no db session maker")
+
+        db_session = shop_client.db_session_maker()
+        consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
+        if consignment is None:
+            raise ConsignmentClientException("Could not set healthy pattern because there is no Consignment in the DB with id '{id}'".format(id=consignment_id))
+
+        consignment.healthy_pattern = pattern
+        db_session.flush()
+        db_session.commit()
+        db_session.close()
+
+    @staticmethod
+    def is_completed_when(consignment_id, shop_client, pattern):
+
+        if shop_client.db_session_maker is None:
+            raise ConsignmentClientException("Can't make new offer client has no db session maker")
+
+        db_session = shop_client.db_session_maker()
+        consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
+        if consignment is None:
+            raise ConsignmentClientException("Could not set completed pattern because there is no Consignment in the DB with id '{id}'".format(id=consignment_id))
+
+        db_session = shop_client.db_session_maker()
+        consignment.completed_pattern = pattern
+        db_session.flush()
+        db_session.commit()
+        db_session.close()
 
 
 class ConsignmentOffer(Base):
@@ -315,13 +341,18 @@ class ConsignmentOffer(Base):
         return
 
     @staticmethod
-    def new_offer_for_consignment(shop_client, consignment, description="opportunity awaits", open_and_publish=True):
+    def new_offer_for_consignment(shop_client, consignment_id, description="opportunity awaits", open_and_publish=True):
         if shop_client.db_session_maker is None:
             raise ConsignmentClientException("Can't make new offer client has no db session maker")
-        if consignment.state == Consignment.STATE_COMPLETED or consignment.state == Consignment.STATE_ABANDONED:
-            shop_client.logger.warning("Creating an offer for consignment '{id}' which is finished".format(id=consignment.id))
 
         db_session = shop_client.db_session_maker()
+
+        consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
+        if consignment is None:
+            raise ConsignmentClientException("Can't make new offer for consignment, not consignment with id '{id}' in DB".format(id=consignment_id))
+
+        if consignment.state == Consignment.STATE_COMPLETED or consignment.state == Consignment.STATE_ABANDONED:
+            shop_client.logger.warning("Creating an offer for consignment '{id}' which is finished".format(id=consignment.id))
 
         offer = ConsignmentOffer()
         offer.id = gen_hex_id("O")
@@ -391,7 +422,7 @@ class ConsignmentOffer(Base):
                                                                                          payload=offer_response_msg.payload))
             return
         except jsonschema.ValidationError as ve:
-            logger.warning("Offer resonse message payload failed validation. Ignoring message.")
+            logger.warning("Offer response message payload failed validation. Ignoring message.")
             logger.debug("Ignored message validation err '{err}'".format(err=ve))
             logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_response_msg.topic,
                                                                                          payload=str(offer_response_msg.payload)))
@@ -412,15 +443,14 @@ class ConsignmentOffer(Base):
             logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_response_msg.topic, payload=json.dumps(payload)))
             return
 
-        if offer.consignment.send_more_contracts():
+        if not eval_consignment_characteristic(offer.consignment.healthy_pattern, offer.consignment_id, shop_client.db_session_maker, shop_client.logger):
             # P The consignment wants more workers, send the worker a contract
-            contract = ConsignmentContract.new_contract_for_client_for_consignment(shop_client, offer.id, payload['client_id'])
-            if contract is None:
+            contract_id = ConsignmentContract.new_contract_for_client_for_consignment(shop_client, offer.id, payload['client_id'])
+            if contract_id is None:
                 logger.error("Could not create a contract with client '{cid}' for offer '{id}'".format(cid=payload['client_id'], id=offer.id))
                 return
             shop_client.publish_on_topic(ConsignmentShop.topic_worker_contracts.format(client_id=payload['client_id']),
-                                         contract.dumps_contract_message())
-
+                                         ConsignmentContract.dumps_contract_message(contract_id, shop_client))
 
 class ConsignmentContract(Base):
     __tablename__ = "consignment_contract"
@@ -429,19 +459,34 @@ class ConsignmentContract(Base):
     offer_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment_offer.id'))
     offer = sqlalchemy.orm.relationship("ConsignmentOffer", back_populates="contracts")
     worker_shadow_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment_worker_shadow.id'))
+    consignment_id = sqlalchemy.Column(sqlalchemy.String, sqlalchemy.ForeignKey('consignment.id'))
 
     created_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP, default=datetime.datetime.utcnow())
     sent_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
     closed_timestamp_utc = sqlalchemy.Column(sqlalchemy.TIMESTAMP)
 
-    def dumps_contract_message(self):
+    STATE_OPEN = "OPEN"
+    STATE_CLOSED = "CLOSED"
+    state = sqlalchemy.Column(sqlalchemy.String, default=STATE_OPEN)
+
+    @staticmethod
+    def dumps_contract_message(contract_id, shop_client):
+        if shop_client.db_session_maker is None:
+            raise ConsignmentClientException("Can't dump contract message client has no db session maker")
+
+        db_session = shop_client.db_session_maker()
+        contract = db_session.query(ConsignmentContract).filter(ConsignmentContract.id == contract_id).one_or_none()
+        if contract is None:
+            raise ConsignmentClientException("Can't dump contract message client no contract with id '{}' in DB".format(contract_id))
+
         msg = {
-            "consignment_id": self.offer.consignment.id,
-            "offer_id": self.offer.id,
-            "contract_id": self.id,
-            "task_name": self.offer.consignment.task_name,
-            "task_parameters": self.offer.consignment.task_parameters
+            "consignment_id": contract.consignment_id,
+            "offer_id": contract.offer.id,
+            "contract_id": contract.id,
+            "task_name": contract.offer.consignment.task_name,
+            "task_parameters": contract.offer.consignment.task_parameters
         }
+        db_session.close()
         return json.dumps(msg)
 
     @staticmethod
@@ -467,16 +512,21 @@ class ConsignmentContract(Base):
                 "No offer for with id \'{id}\' in DB. Ignoring contract request.".format(id=offer_id))
             return None
 
+        id = gen_hex_id("XT")
         contract = ConsignmentContract()
-        contract.id = gen_hex_id("XT")
+        contract.id = id
         contract.offer_id = offer.id
         contract.offer = offer
         contract.worker_shadow_id = shadow.id
-
+        contract.consignment_id = offer.consignment_id
+        contract.closed_timestamp_utc = None
         db_session.flush()
         db_session.commit()
 
-        return contract
+        db_session.close()
+
+
+        return id
 
 
 class ConsignmentResult(Base):
@@ -566,7 +616,7 @@ class ConsignmentResult(Base):
                 return
 
             nownow = datetime.datetime.utcnow()
-            if nownow > consignment.last_updated_timestamp_utc:
+            if consignment.last_updated_timestamp_utc is None or nownow > consignment.last_updated_timestamp_utc:
                 consignment.last_updated_timestamp_utc = nownow
             db_session.flush()
 
@@ -589,12 +639,12 @@ class ConsignmentResult(Base):
             result.results_encoding = payload["results_encoding"]
             result.work_sequence_number = payload["work_sequence"]
             result.worker_finished = payload["finished"]
+            result.consignment = consignment
 
             db_session.flush()
             db_session.commit()
 
-            logger.info("Stored result!")
-
+            #logger.critical("Stored result!")
             # TODO Check consignment on what should be done when a result is stored (task callbacks)
 
         except sqlalchemy.orm.exc.MultipleResultsFound:
@@ -944,3 +994,105 @@ class ConsignmentTask:
     @staticmethod
     def task(shop_client, task_parameters):
         pass
+
+
+characteristics = {}
+
+
+class ConsignmentCharacteristicException(Exception):
+    pass
+
+
+def characteristic(**kwargs):
+
+    if 'name' not in kwargs.keys():
+        raise ConsignmentCharacteristicException("Name is a required parameter of boolean_characteristic decorator")
+
+    def wrapper_boolean_characteristic(func):
+        characteristics[kwargs['name']] = {"f": func, "params": kwargs['params']}
+
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+
+    return wrapper_boolean_characteristic
+
+
+def eval_consignment_characteristic(pattern, consignment_id, db_session_maker, logger):
+    # Pull all directives out of a string in the format @DIRECTIVE_NAME(optional,list,of,parameters)
+    find_all = "@(" + '|'.join(map(lambda k: k+"[()0-9,]*", characteristics.keys())) + ")"
+
+    # split directive string in the format @DIRECTIVE_NAME(optional,list,of,parameters) info name and parameter regex groups
+    split_name_from_parameters = "(?P<name>[0-9a-zA-Z_]*)(?P<params>\(.*\))?"
+
+    eval_pattern = pattern
+
+    # TODO pre-compile these regexs for speed
+    directives = re.findall(find_all, pattern)
+    for directive in directives:
+        details = re.match(split_name_from_parameters, directive)
+        if details.group('name') not in characteristics.keys():
+            raise ConsignmentCharacteristicException("Unknown characteristic {}".format(details.group('name')))
+
+        if details.group('params') is not None:
+            # P Turn a string like "(10, foo, crap)" into a list of string values ['10', 'foo', 'crap']
+            params = list(map(lambda p: p.strip(), re.sub("[()]", "", details.group('params')).split(",")))
+            directive_result = characteristics[details.group('name')]['f'](consignment_id, db_session_maker, *params)
+        else:
+            directive_result = characteristics[details.group('name')]['f'](consignment_id, db_session_maker)
+
+        eval_pattern = eval_pattern.replace("@{d}".format(d=str(directive)), str(directive_result), 1)
+
+    logger.debug("for consignment {id} '{pattern}' => '{eval_pattern}'".format(id=consignment_id, pattern=pattern, eval_pattern=eval_pattern))
+    return eval(eval_pattern)
+
+
+@characteristic(name="TTL_EXPIRED", params=[])
+def expired_ttl(consignment_id, session_maker):
+    db_session = session_maker()
+    consignment = db_session.query(Consignment).filter(Consignment.id == consignment_id).one_or_none()
+    return (datetime.datetime.utcnow() - consignment.created_timestamp_utc).seconds > consignment.ttl_in_seconds
+
+
+@characteristic(name="ACTIVE_WORKERS", params=["timout"])
+def active_workers(consignment_id, session_maker, timeout):
+    timeout = int(timeout)
+    oldest = datetime.datetime.utcnow() - datetime.timedelta(seconds=timeout)
+    db_session = session_maker()
+    workers_active = db_session.query(ConsignmentResult).filter(sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id, ConsignmentResult.created_timestamp_utc >= oldest)).order_by(ConsignmentResult.created_timestamp_utc).group_by(ConsignmentResult.worker_shadow_id).count()
+
+    db_session.close()
+    return workers_active
+
+
+@characteristic(name="OPEN_CONTRACTS", params=[])
+def contracts_open(consignment_id, session_maker):
+    db_session = session_maker()
+    open_contracts = db_session.query(ConsignmentContract).filter(sqlalchemy.and_(ConsignmentContract.consignment_id == consignment_id, ConsignmentContract.state == ConsignmentContract.STATE_OPEN)).count()
+    db_session.close()
+    return open_contracts
+
+
+@characteristic(name="RECENTLY_OPENED_CONTRACTS", params=[])
+def contracts_recently_opened(consignment_id, session_maker, timeout=5):
+    timeout = int(timeout)
+    oldest = datetime.datetime.utcnow() - datetime.timedelta(seconds=timeout)
+
+    db_session = session_maker()
+    open_contracts = db_session.query(ConsignmentContract).filter(sqlalchemy.and_(ConsignmentContract.consignment_id == consignment_id, ConsignmentContract.state == ConsignmentContract.STATE_OPEN, ConsignmentContract.created_timestamp_utc >= oldest)).count()
+    db_session.close()
+    return open_contracts
+
+
+@characteristic(name="FINISHED_WORKERS", params=[])
+def finished_workers(consignment_id, session_maker):
+    db_session = session_maker()
+    workers_finished = db_session.query(ConsignmentResult).filter(sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id, ConsignmentResult.worker_finished is True)).group_by(ConsignmentResult.worker_shadow_id).count()
+    return workers_finished
+
+
+@characteristic(name="TOTAL_RESULTS", params=[])
+def total_results(consignment_id, session_maker):
+    db_session = session_maker()
+    result_total = db_session.query(ConsignmentResult).filter(sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id, ConsignmentResult.results is not None)).count()
+    return result_total
