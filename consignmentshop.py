@@ -1,6 +1,7 @@
 from consignmentshop_message_schemas import *
 
 import logging
+import logging.handlers
 import sys
 import threading
 import traceback
@@ -406,6 +407,13 @@ class ConsignmentOffer(Base):
             return
 
         if shop_client.assess_offer_needs(payload['worker_parameters']):
+            # TODO Revisit having to send a heart beat before accepting an offer to avoid worker_shadow race condition
+            # A race condition exists when the keeper makes a new offer but has not received a heartbeat message from
+            # a client that will accept the offer. If the keeper has not seen a heartbeat from the client then there will
+            # be no worker_shadow entry in the DB for that client and the keeper will reject the offer to execute the
+            # offer. This is likely only a problem in the initial testing I am doing for development where the DB is
+            # getting tossed every run, but it's better to address the race condition
+            shop_client.send_heartbeat()
             shop_client.publish_on_topic(ConsignmentShop.topic_keeper_accepted_offer,
                                          ConsignmentOffer.dumps_offer_response_message(payload['offer_id'], shop_client))
 
@@ -451,6 +459,7 @@ class ConsignmentOffer(Base):
                 return
             shop_client.publish_on_topic(ConsignmentShop.topic_worker_contracts.format(client_id=payload['client_id']),
                                          ConsignmentContract.dumps_contract_message(contract_id, shop_client))
+
 
 class ConsignmentContract(Base):
     __tablename__ = "consignment_contract"
@@ -824,6 +833,13 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
         if mqtt_broker_host is not None:
             self.connect(mqtt_broker_host, mqtt_server_port, keep_alive)
 
+    def add_remote_syslog_handler(self, syslog_server, syslog_port=514):
+        remote_syslog_formatter = logging.Formatter(
+            '@%(client_id)s ConsignmentShopMQTTThreadedClient %(asctime)s.%(msecs)03d %(levelname)-8s %(thread)d %(threadName)s @%(client_id)s %(message)s')
+        remote_syslog_handler = logging.handlers.SysLogHandler(address=(syslog_server, syslog_port))
+        remote_syslog_handler.setFormatter(remote_syslog_formatter)
+        self.logger.logger.addHandler(remote_syslog_handler)
+
     def connect(self, mqtt_broker_host, mqtt_broker_port, keep_alive=60):
         # The Paho client keeps the host and port you pass it as private attributes. Keep my own copy for reference
         self._logger.debug("connecting {broker_host}:{broker_port}".format(broker_host=mqtt_broker_host,
@@ -999,6 +1015,7 @@ class ConsignmentTask:
 characteristics = {}
 
 
+# TODO there needs to be a thread running for the keeper to periodically reevaluate the open consignments. If the consignment isn't optimal (healthy) need to make more offers
 class ConsignmentCharacteristicException(Exception):
     pass
 
