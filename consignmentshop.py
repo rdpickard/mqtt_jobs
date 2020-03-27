@@ -30,7 +30,7 @@ def gen_hex_id(prefix: str = "", length: int = 22):
     :param length: The length of the string
     :return: prefix (if any) + hex string as str
     """
-    return "{prefix}{rando}".format(prefix=prefix, rando=secrets.token_hex(length))
+    return "{prefix}{random_val}".format(prefix=prefix, random_val=secrets.token_hex(length))
 
 
 def python_fstring_to_regex(fstring):
@@ -43,7 +43,7 @@ def python_fstring_to_regex(fstring):
     :param fstring: String to create regex from
     :return: Regex as a string
     """
-    return re.sub("{([a-zA-Z0-9_]*)}", "(?P<\\1>.[a-zA-Z0-9]*)", fstring)
+    return re.sub(r'{([a-zA-Z0-9_]*)}', r'(?P<\\1>.[a-zA-Z0-9]*)', fstring)
 
 
 class ConsignmentClientException(Exception):
@@ -84,7 +84,8 @@ class ConsignmentThreadedTaskManager:
 
         Example: manager.add_task("count", CountTask)
 
-        :param name: The name the task will be referred to as. If there a is already a registered ConsignmentTask with that name, the old value will be overwritten
+        :param name: The name the task will be referred to as. If there a is already a registered ConsignmentTask with
+        that name, the old value will be overwritten
         :param task: Class of ConsignmentTask that is associated to the name
         :return: Nothing
         """
@@ -148,7 +149,8 @@ class ConsignmentThreadedTaskManager:
 
         if payload['task_name'] not in self.tasks_available():
             # TODO Add feedback to the keeper that this contract can't be honored
-            logger.warning("Task '{task_name}' isn't available for the worker. Ignoring contract message".format(task_name=payload['task_name']))
+            logger.warning("Task '{task_name}' isn't available for the worker. Ignoring contract message".format(
+                task_name=payload['task_name']))
             logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=contract_msg.topic,
                                                                                          payload=contract_msg.payload))
             return
@@ -250,10 +252,10 @@ class ConsignmentShop:
         else:
             client.logger.setLevel(logging.INFO)
 
-        taskmgr = ConsignmentThreadedTaskManager(client.logger)
+        task_manager = ConsignmentThreadedTaskManager(client.logger)
 
         for task_name, task_class in tasks.items():
-            taskmgr.add_task(task_name, task_class)
+            task_manager.add_task(task_name, task_class)
 
         # Listen for new offers
         client.subscribe_to_topic_with_callback(ConsignmentShop.topic_offers_dispatch,
@@ -261,7 +263,7 @@ class ConsignmentShop:
 
         # Listen for contracts to offers I bid for
         client.subscribe_to_topic_with_callback(ConsignmentShop.topic_worker_contracts.format(client_id=client_id),
-                                                taskmgr.incoming_task_contract)
+                                                task_manager.incoming_task_contract)
 
         client.send_heartbeat()
         client.start()
@@ -270,7 +272,7 @@ class ConsignmentShop:
 
         return client
 
-    def consignment_keeper_factory(self, client_id, tasks, db_uri,  db_echo=False):
+    def consignment_keeper_factory(self, client_id, tasks, db_uri, db_echo=False):
         """
         Create ConsignmentShopMQTTThreadedClient that is preconfigured to act as a keeper
 
@@ -307,8 +309,9 @@ class ConsignmentShop:
                                                 ConsignmentWorkerShadow.incoming_heartbeat)
 
         # P listen for work results
-        client.subscribe_to_topic_with_callback(ConsignmentShop.topic_consignment_results.format(consignment_id="([a-zA-Z0-9]*)"),
-                                                ConsignmentResult.incoming_result)
+        client.subscribe_to_topic_with_callback(
+            ConsignmentShop.topic_consignment_results.format(consignment_id="([a-zA-Z0-9]*)"),
+            ConsignmentResult.incoming_result)
 
         client.start()
 
@@ -405,9 +408,10 @@ class Consignment(Base):
         if shop_client.db_session_maker is None:
             raise ConsignmentClientException("Can't make new offer client has no db session maker")
         if self.state == self.STATE_COMPLETED or self.state == self.STATE_ABANDONED:
-            raise ConsignmentClientException("Can't make new offer consignment '{id}' was closed at {closed} in state '{state}'".format(
-                id=self.id, closed=self.closed_timestamp_utc, state=self.state
-            ))
+            raise ConsignmentClientException(
+                "Can't make new offer consignment '{id}' was closed at {closed} in state '{state}'".format(
+                    id=self.id, closed=self.closed_timestamp_utc, state=self.state
+                ))
 
         offer = ConsignmentOffer.new_offer_for_consignment(shop_client, self.id, offer_description)
 
@@ -431,7 +435,9 @@ class Consignment(Base):
         db_session = shop_client.db_session_maker()
         consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
         if consignment is None:
-            raise ConsignmentClientException("Could not set healthy pattern because there is no Consignment in the DB with id '{id}'".format(id=consignment_id))
+            raise ConsignmentClientException(
+                "Could not set healthy pattern because there is no Consignment in the DB with id '{id}'".format(
+                    id=consignment_id))
 
         consignment.healthy_pattern = pattern
         db_session.flush()
@@ -447,7 +453,9 @@ class Consignment(Base):
         db_session = shop_client.db_session_maker()
         consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
         if consignment is None:
-            raise ConsignmentClientException("Could not set completed pattern because there is no Consignment in the DB with id '{id}'".format(id=consignment_id))
+            raise ConsignmentClientException(
+                "Could not set completed pattern because there is no Consignment in the DB with id '{id}'".format(
+                    id=consignment_id))
 
         db_session = shop_client.db_session_maker()
         consignment.completed_pattern = pattern
@@ -457,7 +465,6 @@ class Consignment(Base):
 
 
 class ConsignmentOffer(Base):
-
     __tablename__ = "consignment_offer"
 
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
@@ -494,10 +501,12 @@ class ConsignmentOffer(Base):
 
         consignment = db_session.query(Consignment).filter_by(id=consignment_id).one_or_none()
         if consignment is None:
-            raise ConsignmentClientException("Can't make new offer for consignment, not consignment with id '{id}' in DB".format(id=consignment_id))
+            raise ConsignmentClientException(
+                "Can't make new offer for consignment, not consignment with id '{id}' in DB".format(id=consignment_id))
 
         if consignment.state == Consignment.STATE_COMPLETED or consignment.state == Consignment.STATE_ABANDONED:
-            shop_client.logger.warning("Creating an offer for consignment '{id}' which is finished".format(id=consignment.id))
+            shop_client.logger.warning(
+                "Creating an offer for consignment '{id}' which is finished".format(id=consignment.id))
 
         offer = ConsignmentOffer()
         offer.id = gen_hex_id("O")
@@ -512,7 +521,8 @@ class ConsignmentOffer(Base):
         db_session.commit()
 
         if open_and_publish:
-            shop_client.publish_on_topic(ConsignmentShop.topic_offers_dispatch, ConsignmentOffer.dumps_offer_message(offer))
+            shop_client.publish_on_topic(ConsignmentShop.topic_offers_dispatch,
+                                         ConsignmentOffer.dumps_offer_message(offer))
 
         return offer
 
@@ -547,7 +557,8 @@ class ConsignmentOffer(Base):
             logger.warning("Offer message payload failed validation. Ignoring message.")
             logger.debug("Ignored message validation err '{err}'".format(err=ve))
             logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_msg.topic,
-                                                                                         payload=str(offer_msg.payload)))
+                                                                                         payload=str(
+                                                                                             offer_msg.payload)))
             return
 
         if shop_client.assess_offer_needs(payload['worker_parameters']):
@@ -559,7 +570,8 @@ class ConsignmentOffer(Base):
             # getting tossed every run, but it's better to address the race condition
             shop_client.send_heartbeat()
             shop_client.publish_on_topic(ConsignmentShop.topic_keeper_accepted_offer,
-                                         ConsignmentOffer.dumps_offer_response_message(payload['offer_id'], shop_client))
+                                         ConsignmentOffer.dumps_offer_response_message(payload['offer_id'],
+                                                                                       shop_client))
 
     @staticmethod
     def incoming_offer_response(offer_response_msg, shop_client, logger):
@@ -577,7 +589,8 @@ class ConsignmentOffer(Base):
             logger.warning("Offer response message payload failed validation. Ignoring message.")
             logger.debug("Ignored message validation err '{err}'".format(err=ve))
             logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_response_msg.topic,
-                                                                                         payload=str(offer_response_msg.payload)))
+                                                                                         payload=str(
+                                                                                             offer_response_msg.payload)))
             return
 
         db_session = shop_client.db_session_maker()
@@ -587,19 +600,25 @@ class ConsignmentOffer(Base):
         if offer is None:
             logger.warning("No consignment offer with id \'{id}\' in DB. Ignoring message.".format(
                 id=payload["offer_id"]))
-            logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_response_msg.topic, payload=json.dumps(payload)))
+            logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_response_msg.topic,
+                                                                                         payload=json.dumps(payload)))
             return
         if offer.state != ConsignmentOffer.STATE_OPEN:
             logger.warning("Offer \'{id}\' is not '{open}' is '{state}'. Ignoring message.".format(
                 id=offer.id, open=ConsignmentOffer.STATE_OPEN, state=offer.state))
-            logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_response_msg.topic, payload=json.dumps(payload)))
+            logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=offer_response_msg.topic,
+                                                                                         payload=json.dumps(payload)))
             return
 
-        if not eval_consignment_characteristic(offer.consignment.healthy_pattern, offer.consignment_id, shop_client.db_session_maker, shop_client.logger):
+        if not eval_consignment_characteristic(offer.consignment.healthy_pattern, offer.consignment_id,
+                                               shop_client.db_session_maker, shop_client.logger):
             # P The consignment wants more workers, send the worker a contract
-            contract_id = ConsignmentContract.new_contract_for_client_for_consignment(shop_client, offer.id, payload['client_id'])
+            contract_id = ConsignmentContract.new_contract_for_client_for_consignment(shop_client, offer.id,
+                                                                                      payload['client_id'])
             if contract_id is None:
-                logger.error("Could not create a contract with client '{cid}' for offer '{id}'".format(cid=payload['client_id'], id=offer.id))
+                logger.error(
+                    "Could not create a contract with client '{cid}' for offer '{id}'".format(cid=payload['client_id'],
+                                                                                              id=offer.id))
                 return
             shop_client.publish_on_topic(ConsignmentShop.topic_worker_contracts.format(client_id=payload['client_id']),
                                          ConsignmentContract.dumps_contract_message(contract_id, shop_client))
@@ -630,7 +649,8 @@ class ConsignmentContract(Base):
         db_session = shop_client.db_session_maker()
         contract = db_session.query(ConsignmentContract).filter(ConsignmentContract.id == contract_id).one_or_none()
         if contract is None:
-            raise ConsignmentClientException("Can't dump contract message client no contract with id '{}' in DB".format(contract_id))
+            raise ConsignmentClientException(
+                "Can't dump contract message client no contract with id '{}' in DB".format(contract_id))
 
         msg = {
             "consignment_id": contract.consignment_id,
@@ -682,7 +702,6 @@ class ConsignmentContract(Base):
 
 
 class ConsignmentResult(Base):
-
     __tablename__ = "consignment_result"
 
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
@@ -714,13 +733,15 @@ class ConsignmentResult(Base):
         except json.decoder.JSONDecodeError:
             logger.warning("Results message payload isn't json. Ignoring message.")
             logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
-                                                                                         payload=str(result_msg.payload)))
+                                                                                         payload=str(
+                                                                                             result_msg.payload)))
             return
         except jsonschema.ValidationError as ve:
             logger.warning("Results message payload failed validation. Ignoring message.")
             logger.debug("Ignored message validation err '{err}'".format(err=ve))
             logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
-                                                                                         payload=str(result_msg.payload)))
+                                                                                         payload=str(
+                                                                                             result_msg.payload)))
             return
 
         db_session = shop_client.db_session_maker()
@@ -731,52 +752,69 @@ class ConsignmentResult(Base):
             if offer is None:
                 logger.warning("No consignment offer with id \'{id}\' in DB. Ignoring message.".format(
                     id=payload["offer_id"]))
-                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
+                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
+                                                                                             payload=json.dumps(
+                                                                                                 payload)))
                 return
             if offer.state != ConsignmentOffer.STATE_OPEN:
                 logger.warning("Offer \'{id}\' is not '{open}' is '{state}'. Ignoring message.".format(
                     id=offer.id, open=ConsignmentOffer.STATE_OPEN, state=offer.state))
-                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
+                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
+                                                                                             payload=json.dumps(
+                                                                                                 payload)))
 
             # MAYBE make sure the worker has a valid contract to do this work
 
             # P Make sure the consignment exists, is still open and the topic, and offer match
 
-            consignment_id_match = re.match(python_fstring_to_regex(ConsignmentShop.topic_consignment_results), result_msg.topic)
+            consignment_id_match = re.match(python_fstring_to_regex(ConsignmentShop.topic_consignment_results),
+                                            result_msg.topic)
             if consignment_id_match is None or consignment_id_match.group('consignment_id') is None:
                 logger.warning("Could not find consignment id in msg topic {topic} Ignoring message.".format(
                     topic=result_msg.topic))
-                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
+                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
+                                                                                             payload=json.dumps(
+                                                                                                 payload)))
                 return
             consignment_id = consignment_id_match.group('consignment_id')
             if consignment_id != payload['consignment_id']:
                 logger.warning("Topic '{tid}' and message consignment id '{mid}' don't match Ignoring message.".format(
                     tid=consignment_id, mid=payload['consignment_id']))
-                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
+                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
+                                                                                             payload=json.dumps(
+                                                                                                 payload)))
                 return
 
             consignment = db_session.query(Consignment).filter_by(id=payload['consignment_id']).one_or_none()
             if consignment is None:
                 logger.warning("No consignment  with id \'{id}\' in DB. Ignoring message.".format(
                     id=payload["consignment_id"]))
-                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
+                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
+                                                                                             payload=json.dumps(
+                                                                                                 payload)))
                 return
             if offer.consignment_id != consignment.id:
-                logger.warning("Offer \'{oid}\' has different consignment id of '{ocid}' than the consignment id of the topic {tcid}. Ignoring message".format(
-                    oid=offer.id, ocid=offer.consignment_id, tcid=consignment.id))
-                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
+                logger.warning(
+                    "Offer \'{oid}\' has different consignment id of '{oc_id}' than the consignment id of the topic {tc_id}. Ignoring message".format(
+                        oid=offer.id, oc_id=offer.consignment_id, tc_id=consignment.id))
+                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
+                                                                                             payload=json.dumps(
+                                                                                                 payload)))
                 return
 
-            nownow = datetime.datetime.utcnow()
-            if consignment.last_updated_timestamp_utc is None or nownow > consignment.last_updated_timestamp_utc:
-                consignment.last_updated_timestamp_utc = nownow
+            now_now = datetime.datetime.utcnow()
+            if consignment.last_updated_timestamp_utc is None or now_now > consignment.last_updated_timestamp_utc:
+                consignment.last_updated_timestamp_utc = now_now
             db_session.flush()
 
             # P get the shadow of the worker that is reporting the results
             shadow = db_session.query(ConsignmentWorkerShadow).filter_by(client_id=payload['client_id']).one_or_none()
             if shadow is None:
-                logger.warning("No worker shadow for with client id \'{id}\' in DB. Ignoring message.".format(id=payload["client_id"]))
-                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic, payload=json.dumps(payload)))
+                logger.warning("No worker shadow for with client id \'{id}\' in DB. Ignoring message.".format(
+                    id=payload["client_id"]))
+                logger.debug("Ignored message payload [topic: {topic}] \'{payload}\'".format(topic=result_msg.topic,
+                                                                                             payload=json.dumps(
+                                                                                                 payload)))
                 return
             shadow.last_seen_timestamp_utc = datetime.datetime.utcnow()
             db_session.flush()
@@ -796,7 +834,7 @@ class ConsignmentResult(Base):
             db_session.flush()
             db_session.commit()
 
-            #logger.critical("Stored result!")
+            # logger.critical("Stored result!")
             # TODO Check consignment on what should be done when a result is stored (task callbacks)
 
         except sqlalchemy.orm.exc.MultipleResultsFound:
@@ -838,7 +876,6 @@ class ConsignmentResult(Base):
 
 
 class ConsignmentWorkerShadow(Base):
-
     __tablename__ = "consignment_worker_shadow"
 
     id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
@@ -865,7 +902,7 @@ class ConsignmentWorkerShadow(Base):
         except jsonschema.ValidationError as ve:
             raise ConsignmentClientException("Heartbeat message failed schema validation {err}".format(err=str(ve)))
 
-        logger.debug("💖 "+payload['client_id'])
+        logger.debug("💖 " + payload['client_id'])
 
         db_session = shop_client.db_session_maker()
         try:
@@ -909,7 +946,6 @@ def client_describe_software(shop_client):
 
 
 class ConsignmentShopMQTTThreadedClient(threading.Thread):
-
     _client_id = None
     _mqtt_client = None
     _mqtt_connected = False
@@ -929,6 +965,7 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
 
     _task_manager = None
 
+    @staticmethod
     def mqtt_threaded_client_exception_catcher(func):
 
         def wrapper(*args):
@@ -938,12 +975,12 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
                 tb = traceback.format_exc()
                 logger = args[0].logger
                 logger.error("Uncaught exception {function} \"{error}\" \"{tb}\"".format(
-                                                                                  function=str(func),
-                                                                                  error=str(e),
-                                                                                  tb=str(
-                                                                                      base64.b64encode(
-                                                                                          tb.encode("utf-8")),
-                                                                                      "utf-8")))
+                    function=str(func),
+                    error=str(e),
+                    tb=str(
+                        base64.b64encode(
+                            tb.encode("utf-8")),
+                        "utf-8")))
                 logger.debug(tb)
 
         return wrapper
@@ -1005,22 +1042,35 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
         # P anything be a rc 0 means the connection is messed up
         self._mqtt_connected = False
         if rc == 1:
-            self._logger.warning("MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 1, invalid protocol version)".format(broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
+            self._logger.warning(
+                "MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 1, invalid protocol version)".format(
+                    broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
         elif rc == 2:
-            self._logger.warning("MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 2, invalid client id)".format(broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
+            self._logger.warning(
+                "MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 2, invalid client id)".format(
+                    broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
         elif rc == 3:
-            self._logger.warning("MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 3, service unavailable)".format(broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
+            self._logger.warning(
+                "MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 3, service unavailable)".format(
+                    broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
         elif rc == 4:
-            self._logger.warning("MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 4, failed authorization)".format(broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
+            self._logger.warning(
+                "MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 4, failed authorization)".format(
+                    broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
         elif rc == 5:
-            self._logger.warning("MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 4, not authorized)".format(broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
+            self._logger.warning(
+                "MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code 4, not authorized)".format(
+                    broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port))
         else:
-            self._logger.warning("MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code {rc}, unknown response code)".format(broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port, rc=rc))
+            self._logger.warning(
+                "MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code {rc}, unknown response code)".format(
+                    broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port, rc=rc))
 
     @mqtt_threaded_client_exception_catcher
     def on_message(self, client, user_data, msg):
 
-        self._logger.debug("\\RCV\\ [topic:{topic}] \'{payload}\'".format(topic=msg.topic, payload=msg.payload))
+        self._logger.debug("\\RCV\\ [client: {client}] [user_data: {user_data}] [topic:{topic}] \'{payload}\'".format(
+            topic=msg.topic, payload=msg.payload, client=client, user_data=user_data))
         called_back_count = 0
 
         for topic_regex, callback in self._topic_callbacks.items():
@@ -1035,7 +1085,9 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
 
     def publish_on_topic(self, topic, payload):
         if not self._mqtt_connected:
-            self._logger.warning("Can't publish message, mqtt_client not connected [topic:{topic}] \'{payload}\'".format(topic=topic, payload=payload))
+            self._logger.warning(
+                "Can't publish message, mqtt_client not connected [topic:{topic}] \'{payload}\'".format(topic=topic,
+                                                                                                        payload=payload))
             return False
 
         self._logger.debug("\\PUB\\ [topic:{topic}] \'{payload}\'".format(topic=topic, payload=payload))
@@ -1179,7 +1231,6 @@ class ConsignmentCharacteristicException(Exception):
 
 
 def characteristic(**kwargs):
-
     if 'name' not in kwargs.keys():
         raise ConsignmentCharacteristicException("Name is a required parameter of boolean_characteristic decorator")
 
@@ -1188,6 +1239,7 @@ def characteristic(**kwargs):
 
         def wrapper(*args, **wrapper_kwargs):
             return func(*args, **wrapper_kwargs)
+
         return wrapper
 
     return wrapper_boolean_characteristic
@@ -1195,14 +1247,14 @@ def characteristic(**kwargs):
 
 def eval_consignment_characteristic(pattern, consignment_id, db_session_maker, logger):
     # Pull all directives out of a string in the format @DIRECTIVE_NAME(optional,list,of,parameters)
-    find_all = "@(" + '|'.join(map(lambda k: k+"[()0-9,]*", characteristics.keys())) + ")"
+    find_all = "@(" + '|'.join(map(lambda k: k + "[()0-9,]*", characteristics.keys())) + ")"
 
     # split directive string in the format @DIRECTIVE_NAME(optional,list,of,parameters) info name and parameter regex groups
     split_name_from_parameters = r'(?P<name>[0-9a-zA-Z_]*)(?P<params>\(.*\))?'
 
     eval_pattern = pattern
 
-    # TODO pre-compile these regexs for speed
+    # TODO pre-compile these regex for speed
     directives = re.findall(find_all, pattern)
     for directive in directives:
         details = re.match(split_name_from_parameters, directive)
@@ -1211,14 +1263,15 @@ def eval_consignment_characteristic(pattern, consignment_id, db_session_maker, l
 
         if details.group('params') is not None:
             # P Turn a string like "(10, foo, crap)" into a list of string values ['10', 'foo', 'crap']
-            params = list(map(lambda p: p.strip(), re.sub("[()]", "", details.group('params')).split(",")))
+            params = list(map(lambda p: p.strip(), re.sub(r'[()]', "", details.group('params')).split(",")))
             directive_result = characteristics[details.group('name')]['f'](consignment_id, db_session_maker, *params)
         else:
             directive_result = characteristics[details.group('name')]['f'](consignment_id, db_session_maker)
 
         eval_pattern = eval_pattern.replace("@{d}".format(d=str(directive)), str(directive_result), 1)
 
-    logger.debug("for consignment {id} '{pattern}' => '{eval_pattern}'".format(id=consignment_id, pattern=pattern, eval_pattern=eval_pattern))
+    logger.debug("for consignment {id} '{pattern}' => '{eval_pattern}'".format(id=consignment_id, pattern=pattern,
+                                                                               eval_pattern=eval_pattern))
     return eval(eval_pattern)
 
 
@@ -1234,7 +1287,10 @@ def active_workers(consignment_id, session_maker, timeout):
     timeout = int(timeout)
     oldest = datetime.datetime.utcnow() - datetime.timedelta(seconds=timeout)
     db_session = session_maker()
-    workers_active = db_session.query(ConsignmentResult).filter(sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id, ConsignmentResult.created_timestamp_utc >= oldest)).order_by(ConsignmentResult.created_timestamp_utc).group_by(ConsignmentResult.worker_shadow_id).count()
+    workers_active = db_session.query(ConsignmentResult).filter(
+        sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id,
+                        ConsignmentResult.created_timestamp_utc >= oldest)).order_by(
+        ConsignmentResult.created_timestamp_utc).group_by(ConsignmentResult.worker_shadow_id).count()
 
     db_session.close()
     return workers_active
@@ -1243,7 +1299,9 @@ def active_workers(consignment_id, session_maker, timeout):
 @characteristic(name="OPEN_CONTRACTS", params=[])
 def contracts_open(consignment_id, session_maker):
     db_session = session_maker()
-    open_contracts = db_session.query(ConsignmentContract).filter(sqlalchemy.and_(ConsignmentContract.consignment_id == consignment_id, ConsignmentContract.state == ConsignmentContract.STATE_OPEN)).count()
+    open_contracts = db_session.query(ConsignmentContract).filter(
+        sqlalchemy.and_(ConsignmentContract.consignment_id == consignment_id,
+                        ConsignmentContract.state == ConsignmentContract.STATE_OPEN)).count()
     db_session.close()
     return open_contracts
 
@@ -1254,7 +1312,10 @@ def contracts_recently_opened(consignment_id, session_maker, timeout=5):
     oldest = datetime.datetime.utcnow() - datetime.timedelta(seconds=timeout)
 
     db_session = session_maker()
-    open_contracts = db_session.query(ConsignmentContract).filter(sqlalchemy.and_(ConsignmentContract.consignment_id == consignment_id, ConsignmentContract.state == ConsignmentContract.STATE_OPEN, ConsignmentContract.created_timestamp_utc >= oldest)).count()
+    open_contracts = db_session.query(ConsignmentContract).filter(
+        sqlalchemy.and_(ConsignmentContract.consignment_id == consignment_id,
+                        ConsignmentContract.state == ConsignmentContract.STATE_OPEN,
+                        ConsignmentContract.created_timestamp_utc >= oldest)).count()
     db_session.close()
     return open_contracts
 
@@ -1262,12 +1323,16 @@ def contracts_recently_opened(consignment_id, session_maker, timeout=5):
 @characteristic(name="FINISHED_WORKERS", params=[])
 def finished_workers(consignment_id, session_maker):
     db_session = session_maker()
-    workers_finished = db_session.query(ConsignmentResult).filter(sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id, ConsignmentResult.worker_finished is True)).group_by(ConsignmentResult.worker_shadow_id).count()
+    workers_finished = db_session.query(ConsignmentResult).filter(
+        sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id,
+                        ConsignmentResult.worker_finished is True)).group_by(ConsignmentResult.worker_shadow_id).count()
     return workers_finished
 
 
 @characteristic(name="TOTAL_RESULTS", params=[])
 def total_results(consignment_id, session_maker):
     db_session = session_maker()
-    result_total = db_session.query(ConsignmentResult).filter(sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id, ConsignmentResult.results is not None)).count()
+    result_total = db_session.query(ConsignmentResult).filter(
+        sqlalchemy.and_(ConsignmentResult.consignment_id == consignment_id,
+                        ConsignmentResult.results is not None)).count()
     return result_total
