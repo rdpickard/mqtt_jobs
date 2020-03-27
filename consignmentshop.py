@@ -17,7 +17,6 @@ import paho.mqtt.client as mqtt
 import sqlalchemy
 import sqlalchemy.orm
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import distinct
 
 import jsonschema
 
@@ -165,6 +164,31 @@ class ConsignmentThreadedTaskManager:
 
 
 class ConsignmentShop:
+    """
+    Bundles together parameter values, such at MQTT topic paths, and factory methods to create the worker and keeper
+    actors that implement the Consignment methodologies.
+
+    The worker and keeper ConsignmentShopMQTTThreadedClient instances that are returned from the factory methods a
+    common instance of ConsignmentShop well be configured to communicate among themselves on the same MQTT topics.
+    The workers will be sending heartbeats on the topic the keeper will be listening for them.
+
+    The workers will be subscribed to the MQTT topic where the keeper posts new ConsignmentOffers. Each worker is
+    subscribed to it's own MQTT topic for incoming ConsignmentContracts.
+
+    The keeper, in addition to listening for worker heartbeats, is subscribed to all MQTT topics where workers
+    will publish the results of running ConsignmentTasks.
+
+    Both workers and keeper subscriptions will be configured to call back to handle incoming messages.
+
+    Keeper subscriptions and call backs:
+    ConsignmentShop.topic_heartbeats -> ConsignmentWorkerShadow.incoming_heartbeat
+    ConsignmentShop.topic_keeper_accepted_offer -> ConsignmentOffer.incoming_offer_response
+    ConsignmentShop.topic_consignment_results -> ConsignmentResult.incoming_result
+
+    Worker subscriptions and call backs:
+    ConsignmentShop.topic_offers_dispatch -> ConsignmentOffer.incoming_offer
+    ConsignmentShop.topic_worker_contracts -> ConsignmentThreadedTaskManager.incoming_task_contract
+    """
 
     _name = None
     _tasks = None
@@ -188,18 +212,37 @@ class ConsignmentShop:
 
     @property
     def name(self):
+        """
+        The name of this shop.
+
+        :return: string
+        """
         return self._name
 
     @property
     def do_debug(self):
+        """
+        If the logging for ConsignmentShopMQTTThreadedClient created by factories should log at the most verbose
+        :return: boolean
+        """
         return self._do_debug
 
     @do_debug.setter
     def do_debug(self, do):
+        """
+        Set if the logging for ConsignmentShopMQTTThreadedClient created by factories should log at the most verbose
+        """
         self._do_debug = do
 
     def consignment_worker_factory(self, client_id, tasks):
+        """
+        Create ConsignmentShopMQTTThreadedClient that is preconfigured to act as a worker
 
+        :param client_id: The identification of the client. Must be unique among all clients
+        :param tasks: Dictionary keyed on task name mapped to ConsignmentTask classes. Used to create
+        ConsignmentTaskManager
+        :return: ConsignmentShopMQTTThreadedClient
+        """
         # TODO need to add authentication for MQTT broker
         client = ConsignmentShopMQTTThreadedClient(client_id, self._mqtt_broker_host, self._mqtt_broker_port)
         if self.do_debug:
@@ -228,6 +271,16 @@ class ConsignmentShop:
         return client
 
     def consignment_keeper_factory(self, client_id, tasks, db_uri,  db_echo=False):
+        """
+        Create ConsignmentShopMQTTThreadedClient that is preconfigured to act as a keeper
+
+        :param client_id: The identification of the keeper
+        :param tasks: Dictionary keyed on task name mapped to ConsignmentTask classes. Used to create
+        ConsignmentTaskManager
+        :param db_uri: The URI for creating a sqlalchemy engine for DB access
+        :param db_echo: Enable / disable verbose sqlalchemy logging of SQL commands. Defaults to False
+        :return: ConsignmentShopMQTTThreadedClient
+        """
 
         # TODO need to add authentication for MQTT broker
 
@@ -263,6 +316,15 @@ class ConsignmentShop:
 
 
 class Consignment(Base):
+    """
+    The instigator for workers ultimately executing tasks and reporting the results.
+
+    Describes the type of task to be done by workers, the characteristics a worker needs to have to do the task
+    correctly, how many of those workers are required to have a sufficient data set of results, the particulars of
+    what to apply the task to and when consider the task to have been completed satisfactorily or unsatisfactorily.
+
+    The class is SQLAlchemy Base object to persist instances to a DB.
+    """
 
     __tablename__ = "consignment"
 
@@ -603,9 +665,9 @@ class ConsignmentContract(Base):
                 "No offer for with id \'{id}\' in DB. Ignoring contract request.".format(id=offer_id))
             return None
 
-        id = gen_hex_id("XT")
+        new_contract_id = gen_hex_id("XT")
         contract = ConsignmentContract()
-        contract.id = id
+        contract.id = new_contract_id
         contract.offer_id = offer.id
         contract.offer = offer
         contract.worker_shadow_id = shadow.id
@@ -615,7 +677,6 @@ class ConsignmentContract(Base):
         db_session.commit()
 
         db_session.close()
-
 
         return id
 
@@ -875,7 +936,7 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
                 return func(*args)
             except Exception as e:
                 tb = traceback.format_exc()
-                logger = args[0]._logger
+                logger = args[0].logger
                 logger.error("Uncaught exception {function} \"{error}\" \"{tb}\"".format(
                                                                                   function=str(func),
                                                                                   error=str(e),
@@ -930,7 +991,11 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
         self._mqtt_broker_port = mqtt_broker_port
         self._mqtt_client.connect(mqtt_broker_host, mqtt_broker_port, keep_alive)
 
-    def on_connect(self, client, userdata, flags, rc):
+    def on_connect(self, client, user_data, flags, rc):
+
+        self.logger.debug("on_connect client='{client} user_data='{user_data}' flags='{flags}' rc='{rc}'".format(
+            client=client, user_data=user_data, flags=flags, rc=rc))
+
         if rc == 0:
             if not self._mqtt_connected:
                 self._logger.info("Connected to MQTT broker")
@@ -953,7 +1018,7 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
             self._logger.warning("MQTT broker \'{broker_host}:{broker_port}\'refused connection (return code {rc}, unknown response code)".format(broker_host=self._mqtt_broker_host, broker_port=self._mqtt_broker_port, rc=rc))
 
     @mqtt_threaded_client_exception_catcher
-    def on_message(self, client, userdata, msg):
+    def on_message(self, client, user_data, msg):
 
         self._logger.debug("\\RCV\\ [topic:{topic}] \'{payload}\'".format(topic=msg.topic, payload=msg.payload))
         called_back_count = 0
@@ -1110,8 +1175,8 @@ def characteristic(**kwargs):
     def wrapper_boolean_characteristic(func):
         characteristics[kwargs['name']] = {"f": func, "params": kwargs['params']}
 
-        def wrapper(*args, **kwargs):
-            return func(*args, **kwargs)
+        def wrapper(*args, **wrapper_kwargs):
+            return func(*args, **wrapper_kwargs)
         return wrapper
 
     return wrapper_boolean_characteristic
@@ -1122,7 +1187,7 @@ def eval_consignment_characteristic(pattern, consignment_id, db_session_maker, l
     find_all = "@(" + '|'.join(map(lambda k: k+"[()0-9,]*", characteristics.keys())) + ")"
 
     # split directive string in the format @DIRECTIVE_NAME(optional,list,of,parameters) info name and parameter regex groups
-    split_name_from_parameters = "(?P<name>[0-9a-zA-Z_]*)(?P<params>\(.*\))?"
+    split_name_from_parameters = r'(?P<name>[0-9a-zA-Z_]*)(?P<params>\(.*\))?'
 
     eval_pattern = pattern
 
