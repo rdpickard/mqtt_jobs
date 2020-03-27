@@ -7,9 +7,9 @@ import signal
 if os.path.exists("/tmp/db.sqlite"):
     os.remove("/tmp/db.sqlite")
 
-mqtt_broker_host = os.environ.get('mqtt_broker_host', "localhost")
+mqtt_broker_host = os.environ.get('mqtt_broker_host', "192.168.1.207")
 mqtt_broker_port = os.environ.get('mqtt_broker_port', 1883)
-
+print(mqtt_broker_host)
 shoppe = consignmentshop.ConsignmentShop(mqtt_broker_host, mqtt_broker_port, do_debug=True)
 
 

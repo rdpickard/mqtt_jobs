@@ -103,6 +103,8 @@ class ConsignmentShop:
     topic_consignment_results = "mqtt/keeper/consignment/{consignment_id}/results"
     topic_heartbeats = "mqtt/keeper/heartbeats"
 
+    # TODO MQTT paths need to support a prefix + a shoppe name level in the path for differentiation
+
     def __init__(self, mqtt_broker_host, mqtt_broker_port=1883, do_debug=False):
         self._mqtt_broker_host = mqtt_broker_host
         self._mqtt_broker_port = mqtt_broker_port
@@ -122,6 +124,7 @@ class ConsignmentShop:
 
     def consignment_worker_factory(self, client_id, tasks):
 
+        # TODO need to add authentication for MQTT broker
         client = ConsignmentShopMQTTThreadedClient(client_id, self._mqtt_broker_host, self._mqtt_broker_port)
         if self.do_debug:
             client.logger.setLevel(logging.DEBUG)
@@ -149,6 +152,9 @@ class ConsignmentShop:
         return client
 
     def consignment_keeper_factory(self, client_id, tasks, db_uri,  db_echo=False):
+
+        # TODO need to add authentication for MQTT broker
+
         client = ConsignmentShopMQTTThreadedClient(client_id, self._mqtt_broker_host, self._mqtt_broker_port)
         if self.do_debug:
             client.logger.setLevel(logging.DEBUG)
