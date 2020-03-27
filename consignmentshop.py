@@ -1042,11 +1042,22 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
         return self._mqtt_client.publish(topic, payload)
 
     def subscribe_to_topic_with_callback(self, topic, callback):
-        self.per_topic_on_message_callback(topic, callback)
         self.subscribe_to_topic(topic)
+        self.per_topic_on_message_callback(topic, callback)
 
     def subscribe_to_topic(self, topic):
+
+        # Topic must conform to spec http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718109
         self._logger.debug("\\SUB\\ [topic:{topic}]".format(topic=topic))
+
+        try:
+            topic.decode('UTF-8', 'strict')
+        except UnicodeDecodeError:
+            msg = "Can't subscribe to topic {topic}. Topic path is invalid, must be UTF-8".format(topic=topic)
+            self.logger.error("Can't subscribe to topic {topic}. Topic path is invalid, must be UTF-8")
+            raise ConsignmentClientException(msg)
+
+        # line contains non-utf8 character
         self._mqtt_client.subscribe(topic)
 
     def per_topic_on_message_callback(self, topic_regex, callback):
