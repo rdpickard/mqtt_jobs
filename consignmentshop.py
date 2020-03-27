@@ -25,28 +25,72 @@ Base = declarative_base()
 
 
 def gen_hex_id(prefix: str = "", length: int = 22):
+    """
+    Create a string of random hex values. Can be used to make id values
+    :param prefix: Add a prefix to the string. Defaults to no prefix
+    :param length: The length of the string
+    :return: prefix (if any) + hex string as str
+    """
     return "{prefix}{rando}".format(prefix=prefix, rando=secrets.token_hex(length))
 
 
 def python_fstring_to_regex(fstring):
+    """
+    Create a regex with named match groups from a python format string with named parameters.
+
+    For example "Group name is {group_name}" -> 'Group name is (?P<group_name>.[a-zA-Z0-9]*)'
+
+    NOTE: The returned regex will only match on [a-zA-Z0-9]
+    :param fstring: String to create regex from
+    :return: Regex as a string
+    """
     return re.sub("{([a-zA-Z0-9_]*)}", "(?P<\\1>.[a-zA-Z0-9]*)", fstring)
 
 
 class ConsignmentClientException(Exception):
+    """
+    Wrapper class of Exception. Adds no functionality, only for better try/catch behavior
+    """
     pass
 
 
 class ConsignmentThreadedTaskManager:
+    """
+    Maps ConsignmentTask objects to a task name for access. Tasks are 'registered' with the TaskManager
+    through the add_task method with a name. Registered Tasks can then be accessed by name.
+
+    The incoming_task_contract method is a convenience method for workers. It executes a specified
+    ConsignmentTask.task and takes care of publishing the results on the right MQTT topic
+    """
 
     _tasks = None
     _logger = None
 
     def __init__(self, logger):
+        """
+        New task manager instance. Created with no registered tasks. Tasks must be added with add_task.
+
+        :param logger: The logger to use. Most likely the ConsignmentShopMQTTThreadedClient.logger for the worker
+        using this manager instance is the appropriate value.
+        """
         self._tasks = dict()
         self._logger = logger
         _do_debug = False
 
     def add_task(self, name: str, task):
+        """
+        Register a ConsignmentTask class with this manager by a name.
+
+        Note: The 'task' value is a class not an instance of the class
+
+        Example: manager.add_task("count", CountTask)
+
+        :param name: The name the task will be referred to as. If there a is already a registered ConsignmentTask with that name, the old value will be overwritten
+        :param task: Class of ConsignmentTask that is associated to the name
+        :return: Nothing
+        """
+
+        # TODO Check that passed in task is a class, not an instance
         if name in self.tasks_available():
             self._logger.warning("Overriding task '{name}'".format(name=name))
         else:
@@ -55,12 +99,44 @@ class ConsignmentThreadedTaskManager:
         self._tasks[name] = task
 
     def task_for_name(self, name):
+        """
+        Access ConsignmentTask class by name
+        :param name: Name of task. Case sensitive, exact match
+        :return: ConsignmentTask or None if there is no match for the name
+        """
         return self._tasks.get(name, None)
 
     def tasks_available(self):
-        return self._tasks.keys()
+        """
+        A list of the names of registered tasks
+        :return: list of strings
+        """
+        return list(self._tasks.keys())
 
     def incoming_task_contract(self, contract_msg, shop_client, logger):
+        """
+        A convenience method that works as a callback for
+        ConsignmentShopMQTTThreadedClient.subscribe_to_topic_with_callback.
+
+        Takes a "Consignment Contract Message" JSON message (see consignment_shop_schemas for message structure) and
+        invokes the 'task' function of the ConsignmentTask that is registered with the 'task_name' parameter of
+        the JSON message.
+
+        The yielded or returned results for the ConsignmentTask.task method are published to the MQTT topic that is
+        appropriate for the Consignment that the contract message is associated with. ConsignmentResult.publish_result
+        is called to do the actual work of sending the MQTT message.
+
+        It is the "Invoker" for the "Command Pattern" of how tasks are executed by the worker based on instructions from
+        the Consignment keeper. The ConsignmentTask is the "Command", the ConsignmentShopMQTTThreadedClient is both the
+        "Client" and "Receiver" of the "Command Pattern".
+
+        :param contract_msg: JSON "Consignment Contract Message" as a string. If value does not validate against the
+        message schema the message will be ignored and there will be a logging message at 'warning' level
+        :param shop_client: The ConsignmentShopMQTTThreadedClient that received the contract_message
+        :param logger: The logger to use. DEPRECATED the shop_client has a logger method that is used
+        """
+
+        # TODO Remove deprecated logger parameter
 
         try:
             payload = json.loads(contract_msg.payload)
