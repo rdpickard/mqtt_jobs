@@ -282,9 +282,11 @@ class ConsignmentShop:
         :param db_uri: The URI for creating a sqlalchemy engine for DB access
         :param db_echo: Enable / disable verbose sqlalchemy logging of SQL commands. Defaults to False
         :return: ConsignmentShopMQTTThreadedClient
+        :raises TimeoutErr: If MQTT server can't be reached
         """
 
         # TODO need to add authentication for MQTT broker
+
 
         client = ConsignmentShopMQTTThreadedClient(client_id, self._mqtt_broker_host, self._mqtt_broker_port)
         if self.do_debug:
