@@ -43,7 +43,7 @@ def python_fstring_to_regex(fstring):
     :param fstring: String to create regex from
     :return: Regex as a string
     """
-    return re.sub(r'{([a-zA-Z0-9_]*)}', r'(?P<\\1>.[a-zA-Z0-9]*)', fstring)
+    return re.sub(r'{([a-zA-Z0-9_]*)}', r'(?P<\1>.[a-zA-Z0-9]*)', fstring)
 
 
 class ConsignmentClientException(Exception):
@@ -643,6 +643,7 @@ class ConsignmentContract(Base):
 
     @staticmethod
     def dumps_contract_message(contract_id, shop_client):
+
         if shop_client.db_session_maker is None:
             raise ConsignmentClientException("Can't dump contract message client has no db session maker")
 
@@ -698,7 +699,7 @@ class ConsignmentContract(Base):
 
         db_session.close()
 
-        return id
+        return new_contract_id
 
 
 class ConsignmentResult(Base):
@@ -766,7 +767,6 @@ class ConsignmentResult(Base):
             # MAYBE make sure the worker has a valid contract to do this work
 
             # P Make sure the consignment exists, is still open and the topic, and offer match
-
             consignment_id_match = re.match(python_fstring_to_regex(ConsignmentShop.topic_consignment_results),
                                             result_msg.topic)
             if consignment_id_match is None or consignment_id_match.group('consignment_id') is None:
