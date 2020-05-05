@@ -1,4 +1,4 @@
-from consignmentshop_message_schemas import *
+from mqtt_jobs.consignmentshop_message_schemas import *
 
 import logging
 import logging.handlers
@@ -940,6 +940,24 @@ def client_describe_host(shop_client):
 def client_describe_workload(shop_client):
     return {}
 
+def mqtt_threaded_client_exception_catcher(func):
+
+    def wrapper(*args):
+        try:
+            return func(*args)
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger = args[0].logger
+            logger.error("Uncaught exception {function} \"{error}\" \"{tb}\"".format(
+                function=str(func),
+                error=str(e),
+                tb=str(
+                    base64.b64encode(
+                        tb.encode("utf-8")),
+                    "utf-8")))
+            logger.debug(tb)
+
+    return wrapper
 
 def client_describe_software(shop_client):
     return {}
@@ -965,25 +983,6 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
 
     _task_manager = None
 
-    @staticmethod
-    def mqtt_threaded_client_exception_catcher(func):
-
-        def wrapper(*args):
-            try:
-                return func(*args)
-            except Exception as e:
-                tb = traceback.format_exc()
-                logger = args[0].logger
-                logger.error("Uncaught exception {function} \"{error}\" \"{tb}\"".format(
-                    function=str(func),
-                    error=str(e),
-                    tb=str(
-                        base64.b64encode(
-                            tb.encode("utf-8")),
-                        "utf-8")))
-                logger.debug(tb)
-
-        return wrapper
 
     def __init__(self, client_id, mqtt_broker_host=None, mqtt_server_port=1883, keep_alive=60):
 
@@ -1101,13 +1100,6 @@ class ConsignmentShopMQTTThreadedClient(threading.Thread):
 
         # Topic must conform to spec http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718109
         self._logger.debug("\\SUB\\ [topic:{topic}]".format(topic=topic))
-
-        try:
-            topic.decode('UTF-8', 'strict')
-        except UnicodeDecodeError:
-            msg = "Can't subscribe to topic {topic}. Topic path is invalid, must be UTF-8".format(topic=topic)
-            self.logger.error("Can't subscribe to topic {topic}. Topic path is invalid, must be UTF-8")
-            raise ConsignmentClientException(msg)
 
         # line contains non-utf8 character
         self._mqtt_client.subscribe(topic)

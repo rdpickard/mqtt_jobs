@@ -1,4 +1,4 @@
-import consignmentshop
+import mqtt_jobs.consignmentshop as consignmentshop
 import signal
 import os
 import time

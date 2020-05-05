@@ -1,16 +1,21 @@
-import consignmentshop
+import mqtt_jobs.consignmentshop as consignmentshop
 import time
 import os
 import traceback
-import signal
+
 
 if os.path.exists("/tmp/db.sqlite"):
     os.remove("/tmp/db.sqlite")
 
-mqtt_broker_host = os.environ.get('mqtt_broker_host', "192.168.1.207")
-mqtt_broker_port = os.environ.get('mqtt_broker_port', 1883)
-print(mqtt_broker_host)
-shoppe = consignmentshop.ConsignmentShop(mqtt_broker_host, mqtt_broker_port, do_debug=True)
+shoppe = consignmentshop.ConsignmentShop("localhost", do_debug=False)
+
+
+class PingTask(consignmentshop.ConsignmentTask):
+    @staticmethod
+    def task(shop_client, task_parameters):
+        shop_client.logger.info("Got task!")
+        for i in range(50):
+            yield i, task_parameters['limit']
 
 
 class CountTask(consignmentshop.ConsignmentTask):
@@ -26,24 +31,19 @@ class CountTask(consignmentshop.ConsignmentTask):
             yield i, task_parameters['limit']
 
 
-class GracefulKiller:
-    kill_now = False
+clients = []
+keeper = None
 
-    def __init__(self):
-        signal.signal(signal.SIGINT, self.exit_gracefully)
-        signal.signal(signal.SIGTERM, self.exit_gracefully)
-
-    def exit_gracefully(self, signum, frame):
-        self.kill_now = True
-
-
-if __name__ == '__main__':
-    killer = GracefulKiller()
-
+try:
     keeper = shoppe.consignment_keeper_factory("keeper", {"count": CountTask},
                                                'sqlite:////tmp/db.sqlite?check_same_thread=False',
                                                db_echo=False)
-    keeper.add_remote_syslog_handler("127.0.0.1")
+
+    for i in range(4):
+        clients.append(shoppe.consignment_worker_factory(consignmentshop.gen_hex_id("worker-", 22),
+                       {"count": CountTask}))
+
+    time.sleep(2)
 
     count_to_100_consignment = consignmentshop.Consignment.new_consignment(keeper,
                                                                            "count to 100",
@@ -54,7 +54,18 @@ if __name__ == '__main__':
 
     offer = count_to_100_consignment.make_new_offer(keeper)
 
-    while not killer.kill_now:
-        time.sleep(1)
+    time.sleep(10)
 
+    consignmentshop.eval_consignment_characteristic("@ACTIVE_WORKERS(10) >= 2", count_to_100_consignment.id, keeper.db_session_maker, keeper.logger)
+
+
+except Exception as e:
+    track = traceback.format_exc()
+    print(track)
+
+for client in clients:
+    client.stop()
+
+
+if keeper is not None:
     keeper.stop()
